@@ -124,7 +124,9 @@ async function initializeGraph(settings) {
 }
 
 async function greetUserAsync() {
-  // TODO
+  console.log(process.env.EML_CLIENT_ID)
+  console.log(process.env.EML_TENANT_ID)
+  console.log(process.env.EML_CLIENT_SECRET)
 }
 
 async function displayAccessTokenAsync() {

@@ -1,7 +1,7 @@
 
 
 import 'isomorphic-fetch';
-import { DeviceCodeCredential } from '@azure/identity';
+import {DeviceCodeCredential } from '@azure/identity';
 import { Client } from '@microsoft/microsoft-graph-client';
 // prettier-ignore
 import { TokenCredentialAuthenticationProvider } from
@@ -10,6 +10,14 @@ import { TokenCredentialAuthenticationProvider } from
 let _settings = undefined;
 let _deviceCodeCredential = undefined;
 let _userClient = undefined;
+
+
+
+
+// cache login to skip annoyance
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+const cachePath = './token_cache.json';
+
 
 export async function initializeGraphForUserAuth(settings, deviceCodePrompt) {
   // Ensure settings isn't null
@@ -21,10 +29,9 @@ export async function initializeGraphForUserAuth(settings, deviceCodePrompt) {
 
   _deviceCodeCredential = new DeviceCodeCredential({
       clientId: settings.clientId,
-      tenantId: 'common',
-      clientSecret: settings.clientSecret,
-      userPromptCallback: deviceCodePrompt,
-      additionallyAllowedTenants: ['*']
+      tenantId: settings.tenantId,
+      //clientSecret: settings.clientSecret,
+      userPromptCallback: deviceCodePrompt
   });
 
   console.log('Client ID being used:', settings.clientId);
