@@ -1,0 +1,23 @@
+{
+  "name": "email-router-test",
+  "version": "1.0.0",
+  "description": "records emails",
+  "keywords": [],
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node ."
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@azure/identity-cache-persistence": "^1.3.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@microsoft/microsoft-graph-types": "^2.43.1",
+    "dotenv": "^17.4.2",
+    "isomorphic-fetch": "^3.0.0",
+    "readline-sync": "^1.4.10"
+  }
+}
