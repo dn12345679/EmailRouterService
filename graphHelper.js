@@ -72,7 +72,7 @@ export async function getUserAsync() {
 
     // Only request specific properties with .select()
     return _userClient
-        .api('/me')
+        .api(`/users/${_settings.userEmail}`)
         .select(['displayName', 'mail', 'userPrincipalName'])
         .get();
 }
@@ -82,7 +82,7 @@ export async function getConversationMessagesAsync(conversationId) {
     throw new Error('Graph has not been initialized for user auth');
   }
   return _userClient
-    .api(`/me/mailFolders/inbox/messages/`)
+    .api(`/users/${_settings.userEmail}/mailFolders/inbox/messages/`)
     .filter(`conversationId eq '${conversationId}'`)
     .select(['subject', 'from', 'toRecipients', 'ccRecipients', 
              'receivedDateTime', 'body', 'isRead', 'conversationIndex'])
@@ -138,8 +138,8 @@ export async function sendMailAsync(subject, body, recipient) {
     ],
   };
 
-  // Send the message
-  return _userClient.api('me/sendMail').post({
+  // Send the `message`
+  return _userClient.api(`/users/${_settings.userEmail}/sendMail`).post({
     message: message,
   });
 }

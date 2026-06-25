@@ -5,6 +5,7 @@ const settings = {
   tenantId: process.env.EML_TENANT_ID,
   clientSecret: process.env.EML_CLIENT_SECRET,
   graphUserScopes: ['user.read', 'mail.read', 'mail.send'],
+  userEmail: process.env.userEmail
 };
 
 export default settings;
