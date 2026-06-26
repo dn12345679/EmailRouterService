@@ -1,4 +1,6 @@
 
+import { load } from 'cheerio'; 
+
 
 import { writeFileSync } from 'fs';
 
@@ -11,9 +13,11 @@ import {
   getUserTokenAsync,
   getInboxAsync,
   sendMailAsync,
+  uploadToDB,
   getConversationMessagesAsync,
   //makeGraphCallAsync,
 } from './graphHelper.js';
+import { text } from 'stream/consumers';
 
 async function main() {
   console.log('JavaScript Graph Tutorial');
@@ -30,8 +34,7 @@ async function main() {
     'Display access token',
     'List my inbox',
     'Send mail',
-    'Make a Graph call',
-        'List conversation thread',
+    'Insert into DB',
   ];
 
   while (choice != -1) {
@@ -48,18 +51,17 @@ async function main() {
         break;
       case 1:
         // List emails from user's inbox
-        await listInboxAsync();
+        //await listInboxAsync();
+        const msgs = await getInboxAsync();
+        console.log(msgs)
         break;
       case 2:
         // Send an email message
         await sendMailToSelfAsync();
         break;
       case 3:
-        // Run any Graph code
-        await doGraphCallAsync();
-        break;
-      case 4:
-        await listConversationAsync();
+        await uploadToDB();
+
         break;
       default:
         console.log('Invalid choice! Please try again.');
@@ -69,48 +71,6 @@ async function main() {
 
 main();
 
-
-async function listConversationAsync() {
-  try {
-    const messagePage = await getInboxAsync(); // gets the top 25* email messages
-    const messages = messagePage.value;
-
-    console.log('\nPick a message to view full');
-    messages.slice(0, 5).forEach((m, i) => {
-      console.log(`[${i + 1}] ${m.subject ?? 'NO SUBJECT'} — from ${m.from?.emailAddress?.name}`);
-    });// list out all the messages
-
-    // again as the options but without sender
-    const idx = parseInt(keyInSelect(
-      messages.slice(0, 5).map(m => m.subject ?? 'NO SUBJECT'),
-      'Select a message'
-    ));
-
-    if (idx === -1) return;
-
-    const conversationId = messages[idx].conversationId;
-    console.log(`\nFetching thread for conversationId: ${conversationId}`);
-
-    const thread = await getConversationMessagesAsync(conversationId);
-    const threadMessages = thread.value;
-
-    console.log(`\nThread contains ${threadMessages.length} messages\n`);
-
-    for (const [i, msg] of threadMessages.entries()) {
-      console.log(`[${i + 1}] Subject:  ${msg.subject}`);
-      console.log(`     From:     ${msg.from?.emailAddress?.name} <${msg.from?.emailAddress?.address}>`);
-      console.log(`     Received: ${msg.receivedDateTime}`);
-      console.log(`     Status:   ${msg.isRead ? 'Read' : 'Unread'}`);
-      console.log(`     Body:     ${msg.body?.content?.slice(0, 100).replace(/\n/g, ' ')}`);
-      writeFileSync('email_body.html', msg.body?.content ?? '');
-      console.log('');
-    }
-
-    
-  } catch (err) {
-    console.log(`Error getting conversation: ${err}`);
-  }
-}
 
 
 async function initializeGraph(settings) {
@@ -180,8 +140,4 @@ async function sendMailToSelfAsync() {
   } catch (err) {
     console.log(`Error sending mail: ${err}`);
   }
-}
-
-async function doGraphCallAsync() {
-  // TODO
 }

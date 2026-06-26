@@ -7,6 +7,10 @@ import { Client } from '@microsoft/microsoft-graph-client';
 import { TokenCredentialAuthenticationProvider } from
 '@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js';
 
+
+import { load } from 'cheerio'; 
+import { insertIntoDB }  from './emailProcessing.js';
+
 let _settings = undefined;
 let _deviceCodeCredential = undefined;
 let _userClient = undefined;
@@ -72,7 +76,7 @@ export async function getUserAsync() {
 
     // Only request specific properties with .select()
     return _userClient
-        .api(`/users/${_settings.userEmail}`)
+        .api(`/me`)
         .select(['displayName', 'mail', 'userPrincipalName'])
         .get();
 }
@@ -82,10 +86,21 @@ export async function getConversationMessagesAsync(conversationId) {
     throw new Error('Graph has not been initialized for user auth');
   }
   return _userClient
-    .api(`/users/${_settings.userEmail}/mailFolders/inbox/messages/`)
+    .api(`/me/mailFolders/inbox/messages/`)
     .filter(`conversationId eq '${conversationId}'`)
-    .select(['subject', 'from', 'toRecipients', 'ccRecipients', 
-             'receivedDateTime', 'body', 'isRead', 'conversationIndex'])
+    .select([
+      'subject',
+      'from',
+      'toRecipients',
+      'ccRecipients',
+      'receivedDateTime',
+      'sentDateTime',
+      'body',
+      'isRead',
+      'conversationIndex',
+      'id',
+      'internetMessageHeaders'
+    ])
     .get();
 }
 
@@ -111,10 +126,102 @@ export async function getInboxAsync() {
   return _userClient
     .api('/me/mailFolders/inbox/messages')
     //.select(['from', 'isRead', 'receivedDateTime', 'subject'])
+    .header('Prefer', 'outlook.body-content-type="text"')
     .top(25)
-    .orderby('receivedDateTime DESC')
+    .orderby('receivedDateTime ASC')
     .get();
 }
+
+
+function extractReplyInfo(msg) {
+  const headers = msg.internetMessageHeaders || [];
+  
+  const inReplyTo = headers.find(h => h.name === 'In-Reply-To')?.value;
+  const references = headers.find(h => h.name === 'References')?.value?.split(' ');
+  
+  return {
+    inReplyTo,
+    references
+  };
+}
+
+// handles uploading
+export async function uploadToDB() {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  
+  const uc = await getInboxAsync();
+  const output = [];
+
+  for (const msg of uc.value) {
+    const conversationId = msg.conversationId;
+    const thread = await getConversationMessagesAsync(conversationId);
+    const threadMessages = thread.value;
+
+    for (const threadMsg of threadMessages) {
+      const replyInfo = extractReplyInfo(threadMsg);
+      const data = {
+        "id": threadMsg.id,
+        "conversationId": conversationId,
+        "status": 'unread',
+        "created": threadMsg.sentDateTime,
+        "updated": threadMsg.sentDateTime,
+        "sender": threadMsg.from?.emailAddress?.address,
+        "subject": threadMsg.subject,
+        "body": extractBodyTextWithCheerio(threadMsg.body?.content ?? '').join(" "),
+        "in_reply_to": replyInfo.inReplyTo
+      };
+      output.push(data); 
+    }
+  }
+
+  console.log(`Total emails: ${output.length}`);
+
+  for (let i = 1; i < 15; i++) {
+    console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of 1 output
+  }
+  
+  
+
+  //await insertIntoDB(output);
+  
+  return output;
+}
+
+
+
+export function extractBodyTextWithCheerio(htmlContent) {
+  const $ = load(htmlContent);
+  
+  $('#Signature').remove();
+  $('#divRplyFwdMsg').remove();
+  $('hr').remove();
+
+  const bodyTexts = [];
+  $('.elementToProof').each((i, el) => {
+    const text = $(el).text().trim();
+    
+    if (text && text.length > 0) {
+      bodyTexts.push(text);
+    }
+  });
+  
+  return bodyTexts;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export async function sendMailAsync(subject, body, recipient) {
   // Ensure client isn't undefined
@@ -139,7 +246,7 @@ export async function sendMailAsync(subject, body, recipient) {
   };
 
   // Send the `message`
-  return _userClient.api(`/users/${_settings.userEmail}/sendMail`).post({
+  return _userClient.api(`/me/sendMail`).post({
     message: message,
   });
 }
