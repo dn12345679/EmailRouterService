@@ -9,7 +9,7 @@ import { TokenCredentialAuthenticationProvider } from
 
 
 import { load } from 'cheerio'; 
-import { insertIntoDB }  from './emailProcessing.js';
+import { insertIntoDB }  from './dbManager.js';
 
 let _settings = undefined;
 let _deviceCodeCredential = undefined;
@@ -170,7 +170,7 @@ export async function uploadToDB() {
         "sender": threadMsg.from?.emailAddress?.address,
         "subject": threadMsg.subject,
         "body": extractBodyTextWithCheerio(threadMsg.body?.content ?? '').join(" "),
-        "in_reply_to": replyInfo.inReplyTo
+        "in_reply_to": replyInfo.inReplyTo ?? null
       };
       output.push(data); 
     }
@@ -178,13 +178,13 @@ export async function uploadToDB() {
 
   console.log(`Total emails: ${output.length}`);
 
-  for (let i = 1; i < 15; i++) {
-    console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of 1 output
+  for (let i = 1; i < 3; i++) {
+    console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of output
   }
   
   
 
-  //await insertIntoDB(output);
+  await insertIntoDB(output); // check local db
   
   return output;
 }
