@@ -2,6 +2,10 @@
 import { load } from 'cheerio'; 
 
 
+
+import Anthropic from "@anthropic-ai/sdk"; // https://kalyna.pro/claude-api-nodejs-tutorial/
+const client = new Anthropic();
+
 import { writeFileSync } from 'fs';
 
 import { keyInSelect } from 'readline-sync';
@@ -15,12 +19,31 @@ import {
   sendMailAsync,
   uploadToDB,
   getConversationMessagesAsync,
+
+  extractBodyTextWithCheerio,
   //makeGraphCallAsync,
 } from './graphHelper.js';
 import { text } from 'stream/consumers';
 
+
+async function testAPIClaude() {
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-5",
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: "Explain what an API is in one paragraph.",
+      },
+    ],
+  });
+  console.log(message.content[0].text);
+}
+
 async function main() {
-  console.log('JavaScript Graph Tutorial');
+  // await testAPIClaude()
+
+  
 
   let choice = 0;
 
@@ -51,9 +74,12 @@ async function main() {
         break;
       case 1:
         // List emails from user's inbox
-        //await listInboxAsync();
-        const msgs = await getInboxAsync();
-        console.log(msgs)
+        //const msgs = await getInboxAsync();
+        //console.log(msgs);
+        const msg = await getConversationMessagesAsync("AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAKrSzHB8gEWKuLf9b2JFWro=")
+        const body_content = msg.value[0].body?.content
+        //console.log(body_content)
+        console.log(extractBodyTextWithCheerio(body_content ?? ' ').join(" "))
         break;
       case 2:
         // Send an email message
@@ -84,9 +110,7 @@ async function initializeGraph(settings) {
 }
 
 async function greetUserAsync() {
-  console.log(process.env.EML_CLIENT_ID)
-  console.log(process.env.EML_TENANT_ID)
-  console.log(process.env.EML_CLIENT_SECRET)
+  console.log('')
 }
 
 async function displayAccessTokenAsync() {

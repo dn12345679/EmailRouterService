@@ -38,7 +38,7 @@ export async function initializeGraphForUserAuth(settings, deviceCodePrompt) {
       userPromptCallback: deviceCodePrompt
   });
 
-  console.log('Client ID being used:', settings.clientId);
+  //console.log('Client ID being used:', settings.clientId);
   const authProvider = new TokenCredentialAuthenticationProvider(
       _deviceCodeCredential,
       {
@@ -81,6 +81,12 @@ export async function getUserAsync() {
         .get();
 }
 // THIS ASSUMES that jessica is forwarded the email chain, rather than included in it
+
+/*
+ Input: a valid conversationId referencing an email thread.
+ Output: A JSON object containing 1 column: 'value'
+  'value' is an array of JSON object(s) where each object is an individual message.
+*/
 export async function getConversationMessagesAsync(conversationId) {
   if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
@@ -128,7 +134,7 @@ export async function getInboxAsync() {
     //.select(['from', 'isRead', 'receivedDateTime', 'subject'])
     .header('Prefer', 'outlook.body-content-type="text"')
     .top(25)
-    .orderby('receivedDateTime ASC')
+    .orderby('receivedDateTime DESC')
     .get();
 }
 
@@ -195,13 +201,18 @@ export function extractBodyTextWithCheerio(htmlContent) {
   const $ = load(htmlContent);
   
   $('#Signature').remove();
+  $('#x_Signature').remove();
+  $('#x_x_Signature').remove();
   $('#divRplyFwdMsg').remove();
+  $('#x_divRplyFwdMsg').remove();
+  $('#x_x_divRplyFwdMsg').remove();
   $('hr').remove();
 
   const bodyTexts = [];
-  $('.elementToProof').each((i, el) => {
+  $('[class*="elementToProof"]').each((i, el) => {
     const text = $(el).text().trim();
     
+    // 1000 character limit
     if (text && text.length > 0) {
       bodyTexts.push(text);
     }
