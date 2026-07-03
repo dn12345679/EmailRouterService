@@ -91,7 +91,7 @@ export async function getConversationMessagesAsync(conversationId) {
   if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
   }
-  return _userClient
+  const result = await _userClient
     .api(`/me/mailFolders/inbox/messages/`)
     .filter(`conversationId eq '${conversationId}'`)
     .select([
@@ -108,6 +108,8 @@ export async function getConversationMessagesAsync(conversationId) {
       'internetMessageHeaders'
     ])
     .get();
+    // graph doesnot allow filtering and orderby at the same time.
+  return result;
 }
 
 
@@ -133,8 +135,8 @@ export async function getInboxAsync() {
     .api('/me/mailFolders/inbox/messages')
     //.select(['from', 'isRead', 'receivedDateTime', 'subject'])
     .header('Prefer', 'outlook.body-content-type="text"')
-    .top(25)
-    .orderby('receivedDateTime DESC')
+    .top(100)
+    .orderby('receivedDateTime ASC')
     .get();
 }
 
@@ -196,29 +198,20 @@ export async function uploadToDB() {
 }
 
 
-
 export function extractBodyTextWithCheerio(htmlContent) {
   const $ = load(htmlContent);
-  
-  $('#Signature').remove();
-  $('#x_Signature').remove();
-  $('#x_x_Signature').remove();
-  $('#divRplyFwdMsg').remove();
-  $('#x_divRplyFwdMsg').remove();
-  $('#x_x_divRplyFwdMsg').remove();
+
+  $('style').remove();
+  $('script').remove();
+  $('[id*="Signature"]').remove();
+  $('[class*="Signature"]').remove();
+  $('[id*="divRplyFwdMsg"]').remove();
+  $('[class*="divRplyFwdMsg"]').remove();
   $('hr').remove();
 
-  const bodyTexts = [];
-  $('[class*="elementToProof"]').each((i, el) => {
-    const text = $(el).text().trim();
-    
-    // 1000 character limit
-    if (text && text.length > 0) {
-      bodyTexts.push(text);
-    }
-  });
+  const full_text = $.text().trim()
   
-  return bodyTexts;
+  return [full_text];
 }
 
 

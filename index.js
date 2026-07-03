@@ -3,12 +3,10 @@ import { load } from 'cheerio';
 
 
 
-import Anthropic from "@anthropic-ai/sdk"; // https://kalyna.pro/claude-api-nodejs-tutorial/
-const client = new Anthropic();
-
 import { writeFileSync } from 'fs';
 
 import { keyInSelect } from 'readline-sync';
+
 
 import settings from './appSettings.js';
 import {
@@ -24,26 +22,12 @@ import {
   //makeGraphCallAsync,
 } from './graphHelper.js';
 import { text } from 'stream/consumers';
+import { classify_email_by_ID } from './dbManager.js';
 
 
-async function testAPIClaude() {
-  const message = await client.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 1024,
-    messages: [
-      {
-        role: "user",
-        content: "Explain what an API is in one paragraph.",
-      },
-    ],
-  });
-  console.log(message.content[0].text);
-}
+
 
 async function main() {
-  // await testAPIClaude()
-
-  
 
   let choice = 0;
 
@@ -58,6 +42,7 @@ async function main() {
     'List my inbox',
     'Send mail',
     'Insert into DB',
+    'Classify Email',
   ];
 
   while (choice != -1) {
@@ -74,12 +59,9 @@ async function main() {
         break;
       case 1:
         // List emails from user's inbox
-        //const msgs = await getInboxAsync();
-        //console.log(msgs);
-        const msg = await getConversationMessagesAsync("AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAKrSzHB8gEWKuLf9b2JFWro=")
-        const body_content = msg.value[0].body?.content
-        //console.log(body_content)
-        console.log(extractBodyTextWithCheerio(body_content ?? ' ').join(" "))
+        const msgs = await getInboxAsync();
+        console.log(msgs);
+
         break;
       case 2:
         // Send an email message
@@ -89,6 +71,12 @@ async function main() {
         await uploadToDB();
 
         break;
+      case 4:
+        const id = "AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQALsp2nyFykVghdNWvlsw5qY="
+        
+        await classify_email(id);
+        break;
+      
       default:
         console.log('Invalid choice! Please try again.');
     }
@@ -164,4 +152,10 @@ async function sendMailToSelfAsync() {
   } catch (err) {
     console.log(`Error sending mail: ${err}`);
   }
+}
+
+// yeah this a waste of space
+async function classify_email(id) {
+  
+  await classify_email_by_ID(id)
 }
