@@ -6,11 +6,25 @@ import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
 } from './graphHelper.js';
+import fs from 'fs/promises'; 
 
 import Anthropic from "@anthropic-ai/sdk";
 const client = new Anthropic();
 
-const region_tracker = './CSV/PropertyToCommunity.csv' // Important! Post-processing mapping from 
+const region_tracker = './CSV/propertyToRegion.json' // Important! Post-processing mapping from property to region
+const response = await fs.readFile(region_tracker, 'utf8')
+const data = JSON.parse(response)
+
+
+
+async function test() {
+  
+}
+await test()
+
+
+
+
 
 // https://node-postgres.com/features/connecting
 const pool = new Pool({
@@ -72,12 +86,13 @@ export const SUBJECT_BUCKETS = {
 export const CONDITION_BUCKETS = {
   northDakota: "Property is located in North Dakota",
   eastGroup: "Property belongs to East Group",
-  unusualWaterBill: "Message concerns a high or unusual water bill",
-  tenantNonCompliance: "Tenant is not complying with community rules",
-  significantSafetyIssue: "Tenant non-compliance is a significant safety issue",
-  minorSafetyIssue: "Tenant non-compliance is a minor safety issue",
-  normalRuleViolation: "Tenant non-compliance is a normal rule violation",
-  companySellingHome: "Comm or RonCal is the seller in a home sale",
+  westGroup: "Property belongs to West Group", 
+  unusualWaterBill: "Message concerns a high or unusual water bill if email is related to Bills.",
+  tenantNonCompliance: "Tenant is not complying with community rules if email is a tenancy or lease question.",
+  significantSafetyIssue: "Tenant non-compliance is a significant safety issue if tenantNonCompliance is true.",
+  minorSafetyIssue: "Tenant non-compliance is a minor safety issue if tenantNonCompliance is true.",
+  normalRuleViolation: "Tenant non-compliance is a normal rule violation if tenantNonCompliance is true.",
+  companySellingHome: "Comm or RonCal is the seller in a home sale if email is related to Home sale.",
   employeeExpenseOrTimeOff: "Message concerns company expenses, receipts, credit cards, approvals, payroll, or time off"
 };
 
@@ -188,6 +203,9 @@ export const EXAMPLE =
     "location": "Bakerview Estates",
     "code": "BV",
     "lot": "99"
+  },
+  "updates" :{
+    "lastUpdatedTime": "MM/DD/YYYY"
   }
 }
 `
@@ -203,12 +221,13 @@ Instructions:
 1. Compute a probability for every top-level subject category. The probabilities across all top-level categories must sum to exactly 1.0. Pay attention to the order that
 the emails in the chain are in, as noted by the date and time of received. The emails may not have been ordered in sequential time.
 2. Within each category, compute probabilities for every subcategory. The subcategory probabilities within a category should sum to that category's probability.
-3. Evaluate every condition independently. Return true if the likelihood is at least 0.5; otherwise return false. The conditions are here: ${CONDITIONS}
-4. If present, return also:
+3. Evaluate every condition independently. It is not required to figure out if the region is North Dakota or eastGroup or westGroup, but fill if possible. Return true if the likelihood is at least 0.5; otherwise return false. The conditions are here: ${CONDITIONS}
+4. If relevant to the message and not a brief mention, return also:
    - Property Location. If there are multiple locations, list them in an array format like this: [Bakerview, Appaloosa]
-   - Property Code. If there are multiple 2 Letter Property Codes, List them in an array format like this: [BV, AP]
-   - Lot Number. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
-5. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly). Do not include any explanations or extra content, just fill out the JSON.
+   - Property Code enclosed in array format regardless of count []. If there are multiple 2 Letter Property Codes, List them in an array format like this: [BV, AP]
+   - Lot Number enclosed in array format regardless of count []. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
+5. Under the json "updates" value, the "lastUpdatedTime" should be the month/day/year string representing the time of the last email sent in the thread that is relevant to the topic.
+6. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly). Do not include any explanations or extra content, just fill out the JSON.
 
 ${TEMPLATE}
 `
@@ -222,6 +241,7 @@ async function LLM_classification(prompt) {
       {
         role: "user",
         content: prompt,
+        cache_control: { type: "ephemeral" },  // cached here
       },
     ],
   });
@@ -236,12 +256,37 @@ async function LLM_classification(prompt) {
   
 }
 
+
+// https://stackoverflow.com/questions/49035237/how-to-find-and-match-a-specific-value-in-a-json-object-array
+// Given a property code(s), checks the region against the JSON. Return a JSON object representing the region
+// if multiple property codes are given, then return the regions that all the property codes are related to. 
+/*
+{
+  East: boolean,
+  West: boolean,
+  North: boolean
+}
+*/
+async function check_region_by_code(codes) {
+  const return_json = {
+    "East": false,
+    "West": false,
+    "North": false
+  }
+  for (code in codes) {
+    const community = data?.find(o => Object.entries(o).some(([k, value]) => k === 'Community Code' && value === code))
+    return_json.East = false ? community.Region === "East": true; // change to true once only
+    return_json.West = false ? community.Region === "West" : true;
+    return_json.North = false ? community.Region === "North" : true;
+  }
+  
+
+  return return_json;
+}
+
 // given an input conversation id, representing the conversation of a forwarded or CC'd or direct email from graphHelper.getConversationMessagesAsync(id),
 // calls Claude to classify and update the database if the database has missing data that it can fill in.
 export async function classify_email_by_ID(id) {
-    // check for conclusion: AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQALsp2nyFykVghdNWvlsw5qY=
-  // good email: AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAKrSzHB8gEWKuLf9b2JFWro=
-  // erichs request: AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAOu_YefYcldGrjKCMSCg5OM=
 
   const conversation = await getConversationMessagesAsync(id)
   const body_content = conversation.value[0].body?.content
@@ -250,10 +295,20 @@ export async function classify_email_by_ID(id) {
   console.log(str)
 
   const initial_JSON = await LLM_classification(str)
+  const clean = initial_JSON.replace(/```json|```/g, "").trim();
+  const obj = JSON.parse(clean);
+
+  // classify region
+  const property_code_classification = await check_region_by_code(obj.property.code)
+  obj.conditions.northDakota = property_code_classification.North
+  obj.conditions.eastGroup = property_code_classification.East 
+  obj.conditions.westGroup = property_code_classification.West
+  
   console.log(initial_JSON)
 }
 
-
+// Given a set of emails from graphHelper.uploadToDB(), inserts into local postgres database.
+// ensure table exists and .env contains login credentials
 export async function insertIntoDB(emails) {
   try {
     console.log('connected to db');
@@ -263,6 +318,10 @@ export async function insertIntoDB(emails) {
       // a further optimization could be to have seenIds be instead the ids that exist within the database, but that could introduce some issues
       if (seenIds.has(email.conversationId)) continue;
       seenIds.add(email.conversationId);
+
+
+      await 
+
       await pool.query(`
         INSERT INTO email (
           id, conversation_id, status, created, updated,

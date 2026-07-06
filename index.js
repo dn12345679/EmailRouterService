@@ -41,7 +41,7 @@ async function main() {
     'Display access token',
     'List my inbox',
     'Send mail',
-    'Insert into DB',
+    'Classify all and Insert into DB',
     'Classify Email',
   ];
 
