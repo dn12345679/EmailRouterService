@@ -3,8 +3,6 @@
 import 'isomorphic-fetch';
 import {DeviceCodeCredential, useIdentityPlugin } from '@azure/identity';
 import { Client } from '@microsoft/microsoft-graph-client';
-import { setLogLevel } from '@azure/logger';
-setLogLevel('info');
 // prettier-ignore
 import { TokenCredentialAuthenticationProvider } from
 '@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js';
@@ -95,8 +93,9 @@ export async function getConversationMessagesAsync(conversationId) {
       'toRecipients',
       'ccRecipients',
       'receivedDateTime',
-      'sentDateTime',
+      'lastModifiedDateTime',
       'body',
+      'uniqueBody',
       'isRead',
       'conversationIndex',
       'id',
@@ -128,7 +127,7 @@ export async function getInboxAsync() {
 
   return _userClient
     .api('/me/mailFolders/inbox/messages')
-    //.select(['from', 'isRead', 'receivedDateTime', 'subject'])
+    .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
     .header('Prefer', 'outlook.body-content-type="text"')
     .top(100)
     .orderby('receivedDateTime ASC')
@@ -155,21 +154,23 @@ export async function uploadToDB() {
   }
   
   const uc = await getInboxAsync();
+  const unique_cid = [...new Set(uc.value.map(message => message.conversationId))];
+
   const output = [];
 
-  for (const msg of uc.value) {
-    const conversationId = msg.conversationId;
-    const thread = await getConversationMessagesAsync(conversationId);
+  for (const id of unique_cid) {
+    const thread = await getConversationMessagesAsync(id);
     const threadMessages = thread.value;
 
+    // still grabs every email 
     for (const threadMsg of threadMessages) {
       const replyInfo = extractReplyInfo(threadMsg);
       const data = {
         "id": threadMsg.id,
-        "conversationId": conversationId,
+        "conversationId": id,
         "status": 'unread',
-        "created": threadMsg.sentDateTime,
-        "updated": threadMsg.sentDateTime,
+        "created": threadMsg.receivedDateTime,
+        "updated": threadMsg.lastModifiedDateTime,
         "sender": threadMsg.from?.emailAddress?.address,
         "subject": threadMsg.subject,
         "body": extractBodyTextWithCheerio(threadMsg.body?.content ?? '').join(" "),
@@ -182,12 +183,14 @@ export async function uploadToDB() {
   console.log(`Total emails: ${output.length}`);
 
   for (let i = 1; i < 3; i++) {
+    console.log(output[i])
+    console.log('')
     console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of output
   }
   
   
 
-  await insertIntoDB(output); // check local db
+  //await insertIntoDB(output); // check local db
   
   return output;
 }
@@ -208,18 +211,6 @@ export function extractBodyTextWithCheerio(htmlContent) {
   
   return [full_text];
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 export async function sendMailAsync(subject, body, recipient) {

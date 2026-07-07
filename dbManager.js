@@ -11,16 +11,9 @@ import fs from 'fs/promises';
 import Anthropic from "@anthropic-ai/sdk";
 const client = new Anthropic();
 
-const region_tracker = './CSV/propertyToRegion.json' // Important! Post-processing mapping from property to region
+const region_tracker = './propertyToRegion.json' // Important! Post-processing mapping from property to region
 const response = await fs.readFile(region_tracker, 'utf8')
 const data = JSON.parse(response)
-
-
-
-async function test() {
-  
-}
-await test()
 
 
 
@@ -99,97 +92,15 @@ export const CONDITION_BUCKETS = {
 export const EXAMPLE = 
 `
 {
-  "subjects": {
-    "Tech Support": {
-      "probability": 0.02,
-      "subcategories": {
-        "Email": 0.01,
-        "Phone": 0.00,
-        "OneDrive": 0.00,
-        "RonCal Log": 0.00,
-        "Rent Roll": 0.01,
-        "RDC": 0.00
-      }
-    },
-
-    "Account": {
-      "probability": 0.05,
-      "subcategories": {
-        "Bills": 0.00,
-        "Utility Account": 0.05,
-        "Trash": 0.00,
-        "Checkbooks": 0.00
-      }
-    },
-
-    "Maintenance": {
-      "probability": 0.84,
-      "subcategories": {
-        "Utilities": 0.62,
-        "Infrastructure": 0.15,
-        "Trees": 0.00,
-        "Roads": 0.00,
-        "Community Buildings": 0.00,
-        "Equipment": 0.07
-      }
-    },
-
-    "Potential New Tenancy": {
-      "probability": 0.03,
-      "subcategories": {
-        "RV/Camper": 0.00,
-        "Home Sale": 0.03,
-        "Rental": 0.00
-      }
-    },
-
-    "Rental Assistance": {
-      "probability": 0.00,
-      "subcategories": {
-        "Rental Assistance": 0.00
-      }
-    },
-
-    "Existing Tenancy/Lease": {
-      "probability": 0.05,
-      "subcategories": {
-        "Existing Tenancy": 0.05,
-        "Lease Question": 0.00
-      }
-    },
-
-    "Potential Legal Issue": {
-      "probability": 0.00,
-      "subcategories": {
-        "Legal Concern": 0.00,
-        "Legal Question": 0.00,
-        "Litigation": 0.00,
-        "Claim": 0.00
-      }
-    },
-
-    "RARF Reasonable Accommodation Form": {
-      "probability": 0.00,
-      "subcategories": {
-        "Licensed Vehicle": 0.00,
-        "Non-Mobile Home Vehicle": 0.00,
-        "Lot Modification": 0.00,
-        "Home Modification": 0.00,
-        "Structure Modification": 0.00
-      }
-    },
-
-    "Miscellaneous": {
-      "probability": 0.01,
-      "subcategories": {
-        "Miscellaneous": 0.01
-      }
-    }
+  "subject": {
+      main: "Maintenance"
+      sub: "Utilities and Infrastructure"
   },
 
   "conditions": {
     "northDakota": false,
     "eastGroup": false,
+    "westGroup": false, 
     "unusualWaterBill": false,
     "tenantNonCompliance": false,
     "significantSafetyIssue": false,
@@ -204,8 +115,12 @@ export const EXAMPLE =
     "code": "BV",
     "lot": "99"
   },
-  "updates" :{
-    "lastUpdatedTime": "MM/DD/YYYY"
+  "important" :{
+    "synopsis": "BV 99 Pavement Path Damaged"
+    "summary": "this is a summary of the email in 100 words or less",
+    "lastUpdatedTime": "MM/DD/YYYY", 
+    "completed": false,
+    "removeFromThread": []
   }
 }
 `
@@ -218,16 +133,21 @@ export const PROMPT = (SUBJECTS, MESSAGE, CONDITIONS, TEMPLATE) =>
 Email Message to classify:\n ${MESSAGE}
 
 Instructions:
-1. Compute a probability for every top-level subject category. The probabilities across all top-level categories must sum to exactly 1.0. Pay attention to the order that
-the emails in the chain are in, as noted by the date and time of received. The emails may not have been ordered in sequential time.
-2. Within each category, compute probabilities for every subcategory. The subcategory probabilities within a category should sum to that category's probability.
+1. Compute a probability for every top-level subject and bottom-level subcategory, and return the main subject and the most likely subcategory under "subject.main" and "subject.sub". Pay attention to the order that
+the emails in the chain are in, as noted by the date and time of received. The messages in the thread may not have been ordered in sequential time.
 3. Evaluate every condition independently. It is not required to figure out if the region is North Dakota or eastGroup or westGroup, but fill if possible. Return true if the likelihood is at least 0.5; otherwise return false. The conditions are here: ${CONDITIONS}
 4. If relevant to the message and not a brief mention, return also:
    - Property Location. If there are multiple locations, list them in an array format like this: [Bakerview, Appaloosa]
    - Property Code enclosed in array format regardless of count []. If there are multiple 2 Letter Property Codes, List them in an array format like this: [BV, AP]
    - Lot Number enclosed in array format regardless of count []. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
-5. Under the json "updates" value, the "lastUpdatedTime" should be the month/day/year string representing the time of the last email sent in the thread that is relevant to the topic.
-6. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly). Do not include any explanations or extra content, just fill out the JSON.
+5. Under the json "important" value, the "lastUpdatedTime" should be the month/day/year string representing the time of the last email sent in the thread that is relevant to the topic.
+6. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
+7. Under the "completed" field in "important", update the value to be 'true' only if the email thread signifies that the subject as a whole is resolved or the email does not mention that further action is necessary, unless if there is a further query indicating the problem was not successfully resolved. Be careful with wording that may indicate that an unrelated task was resolved instead.
+8. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
+9. Under "synopsis" field in "important", create a string of around 6 words that fits as a title of the email in the form: 
+ Property Code + Lot Number + Subjects + Adjective/Description. 
+ If there are multiple property codes or lot numbers, List them like this: "BV 99, AD 23, ..."
+9. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
 
 ${TEMPLATE}
 `
@@ -292,8 +212,7 @@ export async function classify_email_by_ID(id) {
   const body_content = conversation.value[0].body?.content
   const cheeriod = extractBodyTextWithCheerio(body_content ?? ' ').join(" ")
   const str = PROMPT(JSON.stringify(SUBJECT_BUCKETS), cheeriod, JSON.stringify(CONDITION_BUCKETS), EXAMPLE)
-  console.log(str)
-
+ 
   const initial_JSON = await LLM_classification(str)
   const clean = initial_JSON.replace(/```json|```/g, "").trim();
   const obj = JSON.parse(clean);
@@ -304,33 +223,71 @@ export async function classify_email_by_ID(id) {
   obj.conditions.eastGroup = property_code_classification.East 
   obj.conditions.westGroup = property_code_classification.West
   
-  console.log(initial_JSON)
+  return obj; // should be good from here. 
 }
+
+
+// given input from graphHelper.uploadToDB(), returns the conversation ids where fthere is an update to review
+export async function updatedEmails(emails) {
+  try{
+    const conversation_ids = emails.map(e => e.conversationId);
+    const updated_dates = emails.map(e => e.updated);
+
+    const query = `
+      SELECT t.conversationId
+      FROM UNNEST($1::text[], $2::timestamptz[]) AS t(conversationId, updated)
+      LEFT JOIN email m ON m."conversationId" = t.conversationId
+      WHERE m."conversationId" IS NULL
+        OR m.updated IS DISTINCT FROM t.updated
+    `; // returns all the email rows where tthe conversationId exists, and the database does not have a recorded time or has a different recorded update time
+
+    const result = await pool.query(query, [conversationIds, updatedDates]);
+
+    return result.rows.map(row => row.conversationId); // reutrns all the conv ids that fit the criteria above
+  }
+  catch (error){
+    console.log(error)
+  }
+  
+}
+
+
 
 // Given a set of emails from graphHelper.uploadToDB(), inserts into local postgres database.
 // ensure table exists and .env contains login credentials
 export async function insertIntoDB(emails) {
   try {
+
+    // does an u psert on initial and post classification
     console.log('connected to db');
-    const seenIds = new Set();
+
+    const updated_conversation_ids = updatedEmails(emails); // emails that actually changed
     for (const email of emails) {
-      // this isnt fully optimized but guarantees that there is no local duplicate searches.
-      // a further optimization could be to have seenIds be instead the ids that exist within the database, but that could introduce some issues
-      if (seenIds.has(email.conversationId)) continue;
-      seenIds.add(email.conversationId);
+
+      // check the database if the conversationId even needs to be reclassified:
+        // conversationId exists, and lastModifiedDateTime not equal to email.updated, possibly check if the new body text is the same as the existing body text?
+        // Note I am not checking if status = status.completed because it is possible for an email to be completed but original party sends an additional request?
+        // can be fixed by having a pregenerated prompt that tells the recipient to simply send a new email thread to continue the problem
 
 
-      await 
-
+        // step 1, perform iniital upsert
       await pool.query(`
         INSERT INTO email (
-          id, conversation_id, status, created, updated,
+          conversation_id, id, status, created, updated,
           sender, subject, body, in_reply_to
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (conversation_id) DO UPDATE SET
+          id          = EXCLUDED.id,
+          status      = EXCLUDED.status,
+          created     = EXCLUDED.created,
+          updated     = EXCLUDED.updated,
+          sender      = EXCLUDED.sender,
+          subject     = EXCLUDED.subject,
+          body        = EXCLUDED.body,
+          in_reply_to = EXCLUDED.in_reply_to
       `, [
+        email.conversationId,
         email.id,
-        email.conversationId || null,
         email.status,
         email.created || null,
         email.updated,
@@ -339,6 +296,13 @@ export async function insertIntoDB(emails) {
         email.body,
         email.in_reply_to || null
       ]);
+      
+      // maybe figure out a way to batch call? 
+
+      const classification_JSON = await classify_email_by_ID(email.conversationId);
+
+
+
     }
 
     console.log(`Inserted ${emails.length} emails`);
@@ -347,6 +311,9 @@ export async function insertIntoDB(emails) {
     console.error(`Error: ${err.message}`);
   }
 }
+
+
+
 
 
 // Checks to see if a given email with an emailId comes from an internal domain
@@ -364,6 +331,9 @@ function getValById(emails, colSearch, colSearchValue, colTarget) {
   const email = emails.find(item => item[colSearch] === colSearchValue);
   return email[colTarget];
 }
+
+
+
 
 
 

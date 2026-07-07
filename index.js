@@ -34,11 +34,8 @@ async function main() {
   // Initialize Graph
   await initializeGraph(settings);
 
-  // Greet the user by name
-  await greetUserAsync();
 
   const choices = [
-    'Display access token',
     'List my inbox',
     'Send mail',
     'Classify all and Insert into DB',
@@ -53,28 +50,27 @@ async function main() {
         // Exit
         console.log('Goodbye...');
         break;
+
       case 0:
-        // Display access token
-        await displayAccessTokenAsync();
-        break;
-      case 1:
         // List emails from user's inbox
         const msgs = await getInboxAsync();
-        console.log(msgs);
+        const unique_cid = msgs.value.map(message => message.conversationId);
+        console.log(unique_cid)
 
         break;
-      case 2:
+      case 1:
         // Send an email message
         await sendMailToSelfAsync();
         break;
-      case 3:
+      case 2:
         await uploadToDB();
 
         break;
-      case 4:
+      case 3:
         const id = "AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQALsp2nyFykVghdNWvlsw5qY="
         
-        await classify_email(id);
+        const classification = await classify_email_by_ID(id);
+        console.log(classification)
         break;
       
       default:
@@ -95,19 +91,6 @@ async function initializeGraph(settings) {
     // code to use.
     console.log(info.message);
   });
-}
-
-async function greetUserAsync() {
-  console.log('')
-}
-
-async function displayAccessTokenAsync() {
-  try {
-    const userToken = await getUserTokenAsync();
-    console.log(`User token: ${userToken}`);
-  } catch (err) {
-    console.log(`Error getting user access token: ${err}`);
-  }
 }
 
 async function listInboxAsync() {
@@ -152,10 +135,4 @@ async function sendMailToSelfAsync() {
   } catch (err) {
     console.log(`Error sending mail: ${err}`);
   }
-}
-
-// yeah this a waste of space
-async function classify_email(id) {
-  
-  await classify_email_by_ID(id)
 }
