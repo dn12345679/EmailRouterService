@@ -1,7 +1,8 @@
 import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
-import { load } from 'cheerio'; 
+import { load } from 'cheerio';
+import { CONDITION_BUCKETS, SUBJECT_BUCKETS } from "./appSettings.js"; 
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
@@ -28,66 +29,7 @@ const pool = new Pool({
   database: process.env.DB_NAME
 })
 
-export const SUBJECT_BUCKETS = {
-  "Tech Support": [
-    "Email",
-    "Phone",
-    "OneDrive",
-    "RonCal Log",
-    "Rent Roll",
-    "RDC"
-  ],
 
-  "Account": [
-    "Bills or Utility Account or Trash or Checkbooks"
-  ],
-
-  "Maintenance": [
-    "Utilities or Infrastructure",
-    "Trees or Roads or Community Buildings",
-    "Equipment"
-  ],
-
-  "Potential New Tenancy": [
-    "RV/Camper",
-    "Home Sale",
-    "Rental"
-  ],
-
-  "Rental Assistance": [
-    "Rental Assistance"
-  ],
-
-  "Existing Tenancy/Lease": [
-    "Existing Tenancy or Lease Question"
-  ],
-
-  "Potential Legal Issue": [
-    "Legal Concern",
-  ],
-
-  "RARF Reasonable Accommodation Form": [
-    "Licensed Vehicle or Non-Mobile Home Vehicle",
-    "Lot or Home Modification",
-  ],
-
-  "Miscellaneous": [
-    "Miscellaneous"
-  ]
-};
-
-export const CONDITION_BUCKETS = {
-  northDakota: "Property is located in North Dakota",
-  eastGroup: "Property belongs to East Group",
-  westGroup: "Property belongs to West Group", 
-  unusualWaterBill: "Message concerns a high or unusual water bill if email is related to Bills.",
-  tenantNonCompliance: "Tenant is not complying with community rules if email is a tenancy or lease question.",
-  significantSafetyIssue: "Tenant non-compliance is a significant safety issue if tenantNonCompliance is true.",
-  minorSafetyIssue: "Tenant non-compliance is a minor safety issue if tenantNonCompliance is true.",
-  normalRuleViolation: "Tenant non-compliance is a normal rule violation if tenantNonCompliance is true.",
-  companySellingHome: "Comm or RonCal is the seller in a home sale if email is related to Home sale.",
-  employeeExpenseOrTimeOff: "Message concerns company expenses, receipts, credit cards, approvals, payroll, or time off"
-};
 
 export const EXAMPLE = 
 `
@@ -207,75 +149,98 @@ async function check_region_by_code(codes) {
 // given an input conversation id, representing the conversation of a forwarded or CC'd or direct email from graphHelper.getConversationMessagesAsync(id),
 // calls Claude to classify and update the database if the database has missing data that it can fill in.
 export async function classify_email_by_ID(id) {
-
-  const conversation = await getConversationMessagesAsync(id)
-  const body_content = conversation.value[0].body?.content
-  const cheeriod = extractBodyTextWithCheerio(body_content ?? ' ').join(" ")
-  const str = PROMPT(JSON.stringify(SUBJECT_BUCKETS), cheeriod, JSON.stringify(CONDITION_BUCKETS), EXAMPLE)
- 
-  const initial_JSON = await LLM_classification(str)
-  const clean = initial_JSON.replace(/```json|```/g, "").trim();
-  const obj = JSON.parse(clean);
-
-  // classify region
-  const property_code_classification = await check_region_by_code(obj.property.code)
-  obj.conditions.northDakota = property_code_classification.North
-  obj.conditions.eastGroup = property_code_classification.East 
-  obj.conditions.westGroup = property_code_classification.West
+  try{
+    const conversation = await getConversationMessagesAsync(id)
+    const body_content = conversation.value[0].body?.content
+    const cheeriod = extractBodyTextWithCheerio(body_content ?? ' ').join(" ")
+    const str = PROMPT(JSON.stringify(SUBJECT_BUCKETS), cheeriod, JSON.stringify(CONDITION_BUCKETS), EXAMPLE)
   
-  return obj; // should be good from here. 
+    const initial_JSON = await LLM_classification(str)
+    const clean = initial_JSON.replace(/```json|```/g, "").trim();
+    const obj = JSON.parse(clean);
+
+    // classify region
+    const property_code_classification = await check_region_by_code(obj.property.code)
+    obj.conditions.northDakota = property_code_classification.North
+    obj.conditions.eastGroup = property_code_classification.East 
+    obj.conditions.westGroup = property_code_classification.West
+    
+    return obj; // should be good from here. 
+  }
+  catch(error){
+    console.log(error)
+  }
+
 }
 
 
-// given input from graphHelper.uploadToDB(), returns the conversation ids where fthere is an update to review
-export async function updatedEmails(emails) {
-  try{
+// checks if emails even need attention 
+export async function email_needs_processing(emails) {
+  try {
     const conversation_ids = emails.map(e => e.conversationId);
     const updated_dates = emails.map(e => e.updated);
 
-    const query = `
+    // i currently have 3 checks: conversation id is new, or existing was changed, or reminder date has paassed but status is incomplete
+    const result = await pool.query(`
       SELECT t.conversationId
       FROM UNNEST($1::text[], $2::timestamptz[]) AS t(conversationId, updated)
-      LEFT JOIN email m ON m."conversationId" = t.conversationId
-      WHERE m."conversationId" IS NULL
-        OR m.updated IS DISTINCT FROM t.updated
-    `; // returns all the email rows where tthe conversationId exists, and the database does not have a recorded time or has a different recorded update time
+      LEFT JOIN email m ON m.conversation_id = t.conversationId
+      LEFT JOIN recipients r ON r.conversation_id = m.conversation_id
+      WHERE m.conversation_id IS NULL                             
+        OR m.updated IS DISTINCT FROM t.updated                
+        OR (                                                       
+          m.status != 'completed'
+          AND r.reminder_date IS NOT NULL
+          AND r.reminder_date < NOW()
+        )
+    `, [conversation_ids, updated_dates]);
 
-    const result = await pool.query(query, [conversationIds, updatedDates]);
-
-    return result.rows.map(row => row.conversationId); // reutrns all the conv ids that fit the criteria above
+    return result.rows.map(row => row.conversationid);
+  } catch (error) {
+    console.error(error);
   }
-  catch (error){
-    console.log(error)
-  }
-  
 }
 
+
+// from settings.js config, converts the outpuyt to the email addresses (must go through classify_email_by_ID first to get the JSON object)
+async function classification_to_email(LLM_output) {
+  try{
+
+  }
+  catch(error) {
+    console.log(error)
+  }
+}
 
 
 // Given a set of emails from graphHelper.uploadToDB(), inserts into local postgres database.
 // ensure table exists and .env contains login credentials
+// no AI processing here yet.
 export async function insertIntoDB(emails) {
   try {
 
     // does an u psert on initial and post classification
     console.log('connected to db');
 
-    const updated_conversation_ids = updatedEmails(emails); // emails that actually changed
-    for (const email of emails) {
 
-      // check the database if the conversationId even needs to be reclassified:
-        // conversationId exists, and lastModifiedDateTime not equal to email.updated, possibly check if the new body text is the same as the existing body text?
+
         // Note I am not checking if status = status.completed because it is possible for an email to be completed but original party sends an additional request?
         // can be fixed by having a pregenerated prompt that tells the recipient to simply send a new email thread to continue the problem
+    const updated_conversation_ids = new Set(await email_needs_processing(emails));
 
+    for (const email of emails) {
+      // only continue checks if conversationid is in need of update
+      if (updated_conversation_ids.has(email.conversationId)){
 
-        // step 1, perform iniital upsert
-      await pool.query(`
+        // steps 2 and 1 (classify first, and then upload all to db). skipping the unread -> read part, but oh well
+        const classification = await classify_email_by_ID(email.conversationId)       
+        
+        
+        await pool.query(`
         INSERT INTO email (
-          conversation_id, id, status, created, updated,
+          conversation_id, id, status, created, forwarded, updated,
           sender, subject, body, in_reply_to
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (conversation_id) DO UPDATE SET
           id          = EXCLUDED.id,
           status      = EXCLUDED.status,
@@ -285,24 +250,24 @@ export async function insertIntoDB(emails) {
           subject     = EXCLUDED.subject,
           body        = EXCLUDED.body,
           in_reply_to = EXCLUDED.in_reply_to
-      `, [
-        email.conversationId,
-        email.id,
-        email.status,
-        email.created || null,
-        email.updated,
-        email.sender,
-        email.subject,
-        email.body,
-        email.in_reply_to || null
-      ]);
-      
-      // maybe figure out a way to batch call? 
-
-      const classification_JSON = await classify_email_by_ID(email.conversationId);
-
-
-
+          -- forwarded: intentionally omitted, set manually
+          -- synopsis:  intentionally omitted, set by AI later
+          -- property_code, lot: intentionally omitted, set by AI later
+        `, [
+          email.conversationId,  
+          email.id,               
+          email.status,           
+          email.created || null,  
+          email.forwarded ?? null, // first insert only
+          email.updated,        
+          email.sender,         
+          email.subject,         
+          email.body,           
+          email.in_reply_to || null 
+        ]);
+        
+        // maybe figure out a way to batch call= to save compute time? 
+      }
     }
 
     console.log(`Inserted ${emails.length} emails`);
@@ -310,6 +275,14 @@ export async function insertIntoDB(emails) {
   } catch (err) {
     console.error(`Error: ${err.message}`);
   }
+}
+
+async function fetch_read() {
+  const result = await pool.query(`
+    SELECT m.conversationId
+    FROM email m
+    WHERE m.status = 'read'
+  `);
 }
 
 

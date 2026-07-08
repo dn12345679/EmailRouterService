@@ -129,7 +129,7 @@ export async function getInboxAsync() {
     .api('/me/mailFolders/inbox/messages')
     .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
     .header('Prefer', 'outlook.body-content-type="text"')
-    .top(100)
+    .top(10)
     .orderby('receivedDateTime ASC')
     .get();
 }
@@ -162,18 +162,34 @@ export async function uploadToDB() {
     const thread = await getConversationMessagesAsync(id);
     const threadMessages = thread.value;
 
+    // sorting all messages by date and timeproperly
+    const sorted = threadMessages.sort((a, b) => 
+      new Date(a.receivedDateTime) - new Date(b.receivedDateTime)
+    );
+
+    // get the full body content and the email address associated with their text
+    const fullBody = sorted.map(msg => {
+      const text = extractBodyTextWithCheerio(msg.body?.content ?? '').join(" ");
+      return `[${msg.receivedDateTime} - ${msg.from?.emailAddress?.address}]:\n${text}`;
+    }).join('\n\n---\n\n');
+
+    const latest = sorted[sorted.length - 1];
+    const replyInfo = extractReplyInfo(latest);
+
     // still grabs every email 
     for (const threadMsg of threadMessages) {
       const replyInfo = extractReplyInfo(threadMsg);
       const data = {
-        "id": threadMsg.id,
+        "id": latest.id,
         "conversationId": id,
-        "status": 'unread',
-        "created": threadMsg.receivedDateTime,
-        "updated": threadMsg.lastModifiedDateTime,
-        "sender": threadMsg.from?.emailAddress?.address,
-        "subject": threadMsg.subject,
-        "body": extractBodyTextWithCheerio(threadMsg.body?.content ?? '').join(" "),
+        "status": 'read',
+        "created": sorted[0].receivedDateTime,
+        "forwarded": false, // if it already exists in the database, it will be true
+        "updated": latest.lastModifiedDateTime,
+        "sender": sorted[0].from?.emailAddress?.address,
+        "subject": latest.subject,
+        "synopsis": null, // if it already exists in the database, it will be checked again.
+        "body": fullBody,
         "in_reply_to": replyInfo.inReplyTo ?? null
       };
       output.push(data); 
@@ -183,14 +199,14 @@ export async function uploadToDB() {
   console.log(`Total emails: ${output.length}`);
 
   for (let i = 1; i < 3; i++) {
-    console.log(output[i])
+    //console.log(output[i])
     console.log('')
     console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of output
   }
   
   
 
-  //await insertIntoDB(output); // check local db
+  await insertIntoDB(output); // check local db
   
   return output;
 }
