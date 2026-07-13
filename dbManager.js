@@ -35,14 +35,13 @@ export const EXAMPLE =
 `
 {
   "subject": {
-      main: "Maintenance"
-      sub: "Utilities and Infrastructure"
+    "main": "Maintenance",
+    "sub": "Utilities and Infrastructure"
   },
-
   "conditions": {
     "northDakota": false,
     "eastGroup": false,
-    "westGroup": false, 
+    "westGroup": false,
     "unusualWaterBill": false,
     "tenantNonCompliance": false,
     "significantSafetyIssue": false,
@@ -51,16 +50,14 @@ export const EXAMPLE =
     "companySellingHome": false,
     "employeeExpenseOrTimeOff": false
   },
-
   "property": {
     "location": "Bakerview Estates",
     "code": "BV",
     "lot": "99"
   },
-  "important" :{
-    "synopsis": "BV 99 Pavement Path Damaged"
+  "important": {
+    "synopsis": "BV 99 Pavement Path Damaged",
     "summary": "this is a summary of the email in 100 words or less",
-    "lastUpdatedTime": "MM/DD/YYYY", 
     "completed": false,
     "removeFromThread": []
   }
@@ -82,16 +79,17 @@ the emails in the chain are in, as noted by the date and time of received. The m
    - Property Location. If there are multiple locations, list them in an array format like this: [Bakerview, Appaloosa]
    - Property Code enclosed in array format regardless of count []. If there are multiple 2 Letter Property Codes, List them in an array format like this: [BV, AP]
    - Lot Number enclosed in array format regardless of count []. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
-5. Under the json "important" value, the "lastUpdatedTime" should be the month/day/year string representing the time of the last email sent in the thread that is relevant to the topic.
-6. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
-7. Under the "completed" field in "important", update the value to be 'true' only if the email thread signifies that the subject as a whole is resolved or the email does not mention that further action is necessary, unless if there is a further query indicating the problem was not successfully resolved. Be careful with wording that may indicate that an unrelated task was resolved instead.
-8. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
-9. Under "synopsis" field in "important", create a string of around 6 words that fits as a title of the email in the form: 
+5. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
+6. Under the "completed" field in "important", update the value to be 'true' only if the email thread signifies that the subject as a whole is resolved or the email does not mention that further action is necessary, unless if there is a further query indicating the problem was not successfully resolved. Be careful with wording that may indicate that an unrelated task was resolved instead.
+7. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
+8. Under "synopsis" field in "important", create a string of around 6 words that fits as a title of the email in the form: 
  Property Code + Lot Number + Subjects + Adjective/Description. 
  If there are multiple property codes or lot numbers, List them like this: "BV 99, AD 23, ..."
+ If there is no valid property code, lot number, then just write "ANY" + Subjects + Description.
 9. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
 
 ${TEMPLATE}
+
 `
 
 // testing for now. Returns a classification of the email based on a prompt
@@ -99,11 +97,11 @@ async function LLM_classification(prompt) {
   const message = await client.messages.create({
     model: "claude-sonnet-4-5",
     max_tokens: 1024,
+    cache_control: { type: "ephemeral" },
     messages: [
       {
         role: "user",
         content: prompt,
-        cache_control: { type: "ephemeral" },  // cached here
       },
     ],
   });
@@ -131,17 +129,22 @@ async function LLM_classification(prompt) {
 */
 async function check_region_by_code(codes) {
   const return_json = {
-    "East": false,
-    "West": false,
-    "North": false
+    East: false,
+    West: false,
+    North: false
+  };
+
+  for (const code of codes) {
+    const community = data?.find(o =>
+      Object.entries(o).some(([k, value]) => k === 'Community Code' && value === code)
+    );
+
+    if (!community) continue; // no match for this code, skip
+
+    if (community.Region === "East") return_json.East = true;
+    if (community.Region === "West") return_json.West = true;
+    if (community.Region === "North") return_json.North = true;
   }
-  for (code in codes) {
-    const community = data?.find(o => Object.entries(o).some(([k, value]) => k === 'Community Code' && value === code))
-    return_json.East = false ? community.Region === "East": true; // change to true once only
-    return_json.West = false ? community.Region === "West" : true;
-    return_json.North = false ? community.Region === "North" : true;
-  }
-  
 
   return return_json;
 }
@@ -205,7 +208,7 @@ export async function email_needs_processing(emails) {
 // from settings.js config, converts the outpuyt to the email addresses (must go through classify_email_by_ID first to get the JSON object)
 async function classification_to_email(LLM_output) {
   try{
-
+    
   }
   catch(error) {
     console.log(error)
@@ -233,8 +236,10 @@ export async function insertIntoDB(emails) {
       if (updated_conversation_ids.has(email.conversationId)){
 
         // steps 2 and 1 (classify first, and then upload all to db). skipping the unread -> read part, but oh well
-        const classification = await classify_email_by_ID(email.conversationId)       
-        
+        const classification = await classify_email_by_ID("AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAIRtK3CVkxRHqi9C7wFif9Y=") 
+
+        console.log(classification)
+        return;
         
         await pool.query(`
         INSERT INTO email (

@@ -185,13 +185,16 @@ export async function uploadToDB() {
         "status": 'read',
         "created": sorted[0].receivedDateTime,
         "forwarded": false, // if it already exists in the database, it will be true
-        "updated": latest.lastModifiedDateTime,
+        "updated": latest.receivedDateTime ,
         "sender": sorted[0].from?.emailAddress?.address,
         "subject": latest.subject,
         "synopsis": null, // if it already exists in the database, it will be checked again.
         "body": fullBody,
         "in_reply_to": replyInfo.inReplyTo ?? null
       };
+      if (id == "AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAIRtK3CVkxRHqi9C7wFif9Y="){
+        console.log(data)
+      }
       output.push(data); 
     }
   }
@@ -200,8 +203,8 @@ export async function uploadToDB() {
 
   for (let i = 1; i < 3; i++) {
     //console.log(output[i])
-    console.log('')
-    console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of output
+    //console.log('')
+    //console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of output
   }
   
   

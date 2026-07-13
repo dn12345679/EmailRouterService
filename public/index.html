@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Console — Email Router</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="scanlines" aria-hidden="true"></div>
+
+<!-- ===================== SIGN-IN VIEW ===================== -->
+<main id="signin-view" class="view">
+  <div class="window">
+    <div class="window-bar">
+      <span class="dot dot-a"></span>
+      <span class="dot dot-b"></span>
+      <span class="dot dot-c"></span>
+      <span class="window-title">device-auth</span>
+    </div>
+
+    <div class="window-body" id="signin-body">
+      <p class="eyebrow">email-router-test</p>
+      <h1>Sign in to Microsoft Graph</h1>
+      <p class="lede">Pairs this console with your mailbox using a one-time device code. Nothing is cached yet — you'll do this again next time you launch the app.</p>
+
+      <button id="start-btn" class="btn btn-primary">Start sign-in</button>
+
+      <div id="code-panel" class="code-panel hidden">
+        <div class="code-row">
+          <span class="label">code</span>
+          <span id="user-code" class="user-code">------</span>
+          <button id="copy-btn" class="btn btn-ghost btn-small">Copy</button>
+        </div>
+        <a id="verify-link" class="btn btn-secondary" href="#" target="_blank" rel="noopener">
+          Open microsoft.com/devicelogin →
+        </a>
+        <p class="status-line">
+          <span class="cursor"></span>
+          <span id="status-text">waiting for confirmation…</span>
+        </p>
+      </div>
+
+      <p id="error-line" class="error-line hidden"></p>
+    </div>
+  </div>
+</main>
+
+<!-- ===================== DASHBOARD VIEW ===================== -->
+<main id="dashboard-view" class="view hidden">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">email-router-test</p>
+      <h1 class="topbar-title">Console</h1>
+    </div>
+    <div class="signed-in-as">
+      <span class="dot-status" aria-hidden="true"></span>
+      <span id="signed-in-name">signed in</span>
+    </div>
+  </header>
+
+  <section class="grid">
+
+    <!-- Job: List inbox -->
+    <article class="card">
+      <div class="card-head">
+        <span class="job-index">01</span>
+        <h2>List inbox</h2>
+      </div>
+      <p class="card-desc">Pulls the 10 most recent inbox messages.</p>
+      <button class="btn btn-primary run-btn" data-job="inbox">Run</button>
+      <div class="output" data-output="inbox"></div>
+    </article>
+
+    <!-- Job: Send mail -->
+    <article class="card">
+      <div class="card-head">
+        <span class="job-index">02</span>
+        <h2>Send mail</h2>
+      </div>
+      <p class="card-desc">Sends a plain message through the signed-in mailbox.</p>
+      <form id="send-mail-form" class="form">
+        <label>To
+          <input type="email" name="recipient" required placeholder="name@example.com" />
+        </label>
+        <label>Subject
+          <input type="text" name="subject" required placeholder="Subject line" />
+        </label>
+        <label>Body
+          <textarea name="body" required rows="3" placeholder="Message body"></textarea>
+        </label>
+        <button type="submit" class="btn btn-primary">Send</button>
+      </form>
+      <div class="output" data-output="send-mail"></div>
+    </article>
+
+    <!-- Job: Classify all + insert -->
+    <article class="card">
+      <div class="card-head">
+        <span class="job-index">03</span>
+        <h2>Classify all &amp; insert into DB</h2>
+      </div>
+      <p class="card-desc">Runs the full batch job: pulls threads that need processing, classifies them, and upserts into Postgres.</p>
+      <p class="warn-line">Heads up — <code>insertIntoDB</code> currently classifies one hardcoded conversation ID and returns early before the DB upsert. This job will look like it "worked" but won't insert anything yet.</p>
+      <button class="btn btn-primary run-btn" data-job="classify-all">Run batch job</button>
+      <div class="output" data-output="classify-all"></div>
+    </article>
+
+    <!-- Job: Classify single email -->
+    <article class="card">
+      <div class="card-head">
+        <span class="job-index">04</span>
+        <h2>Classify email</h2>
+      </div>
+      <p class="card-desc">Classifies a single thread by conversation ID, without touching the DB.</p>
+      <form id="classify-email-form" class="form">
+        <label>Conversation ID
+          <input type="text" name="id" required placeholder="AAQkADQzNTI4..." class="mono-input" />
+        </label>
+        <button type="submit" class="btn btn-primary">Classify</button>
+      </form>
+      <div class="output" data-output="classify-email"></div>
+    </article>
+
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

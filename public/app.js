@@ -1,0 +1,238 @@
+const signinView = document.getElementById('signin-view');
+const dashboardView = document.getElementById('dashboard-view');
+
+const startBtn = document.getElementById('start-btn');
+const codePanel = document.getElementById('code-panel');
+const userCodeEl = document.getElementById('user-code');
+const verifyLink = document.getElementById('verify-link');
+const statusText = document.getElementById('status-text');
+const copyBtn = document.getElementById('copy-btn');
+const errorLine = document.getElementById('error-line');
+const signedInName = document.getElementById('signed-in-name');
+
+let pollHandle = null;
+
+// ---------------------------------------------------------------------
+// Auth flow
+// ---------------------------------------------------------------------
+
+async function checkStatusOnLoad() {
+  const state = await fetchJSON('/api/auth/status');
+  if (state.status === 'authenticated') {
+    showDashboard(state);
+  } else if (state.status === 'awaitingCode') {
+    startBtn.classList.add('hidden');
+    codePanel.classList.remove('hidden');
+    applyDeviceCodeState(state);
+    startPolling();
+  }
+}
+
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+  startBtn.textContent = 'Requesting code…';
+  errorLine.classList.add('hidden');
+
+  try {
+    await fetchJSON('/api/auth/start', { method: 'POST' });
+    startBtn.classList.add('hidden');
+    codePanel.classList.remove('hidden');
+    startPolling();
+  } catch (err) {
+    showAuthError(err.message);
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start sign-in';
+  }
+});
+
+copyBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(userCodeEl.textContent.trim());
+  copyBtn.textContent = 'Copied';
+  setTimeout(() => (copyBtn.textContent = 'Copy'), 1200);
+});
+
+function startPolling() {
+  if (pollHandle) return;
+  pollHandle = setInterval(async () => {
+    const state = await fetchJSON('/api/auth/status');
+    applyDeviceCodeState(state);
+
+    if (state.status === 'authenticated') {
+      clearInterval(pollHandle);
+      pollHandle = null;
+      showDashboard(state);
+    } else if (state.status === 'error') {
+      clearInterval(pollHandle);
+      pollHandle = null;
+      showAuthError(state.error);
+    }
+  }, 2000);
+}
+
+function applyDeviceCodeState(state) {
+  if (state.deviceCode) {
+    userCodeEl.textContent = state.deviceCode.userCode ?? '------';
+    verifyLink.href = state.deviceCode.verificationUri ?? '#';
+  }
+  if (state.status === 'awaitingCode') {
+    statusText.textContent = 'waiting for confirmation…';
+  }
+}
+
+function showAuthError(message) {
+  errorLine.textContent = message || 'Something went wrong during sign-in.';
+  errorLine.classList.remove('hidden');
+  statusText.textContent = 'failed';
+}
+
+function showDashboard(state) {
+  signinView.classList.add('hidden');
+  dashboardView.classList.remove('hidden');
+  const name = state.user?.displayName || state.user?.mail || 'signed in';
+  signedInName.textContent = name;
+}
+
+// ---------------------------------------------------------------------
+// Job cards
+// ---------------------------------------------------------------------
+
+document.querySelectorAll('.run-btn').forEach((btn) => {
+  btn.addEventListener('click', () => runJob(btn.dataset.job, btn));
+});
+
+document.getElementById('send-mail-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const out = outputEl('send-mail');
+  const submitBtn = form.querySelector('button[type="submit"]');
+  const payload = Object.fromEntries(new FormData(form).entries());
+
+  setLoading(submitBtn, out, 'Sending…');
+  try {
+    await fetchJSON('/api/send-mail', { method: 'POST', body: JSON.stringify(payload) });
+    renderOk(out, 'Sent.');
+    form.reset();
+  } catch (err) {
+    renderError(out, err.message);
+  } finally {
+    resetLoading(submitBtn, 'Send');
+  }
+});
+
+document.getElementById('classify-email-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const out = outputEl('classify-email');
+  const submitBtn = form.querySelector('button[type="submit"]');
+  const { id } = Object.fromEntries(new FormData(form).entries());
+
+  setLoading(submitBtn, out, 'Classifying…');
+  try {
+    const result = await fetchJSON('/api/classify-email', { method: 'POST', body: JSON.stringify({ id }) });
+    renderClassification(out, result);
+  } catch (err) {
+    renderError(out, err.message);
+  } finally {
+    resetLoading(submitBtn, 'Classify');
+  }
+});
+
+async function runJob(job, btn) {
+  const out = outputEl(job);
+  setLoading(btn, out, 'Running…');
+
+  try {
+    if (job === 'inbox') {
+      const messages = await fetchJSON('/api/inbox');
+      renderInbox(out, messages);
+    } else if (job === 'classify-all') {
+      const result = await fetchJSON('/api/classify-all', { method: 'POST' });
+      renderOk(out, `Done. Checked ${result.count} email(s).`);
+    }
+  } catch (err) {
+    renderError(out, err.message);
+  } finally {
+    resetLoading(btn, job === 'inbox' ? 'Run' : 'Run batch job');
+  }
+}
+
+// ---------------------------------------------------------------------
+// Render helpers
+// ---------------------------------------------------------------------
+
+function outputEl(job) {
+  return document.querySelector(`[data-output="${job}"]`);
+}
+
+function setLoading(btn, out, label) {
+  if (btn) { btn.disabled = true; btn.dataset.originalText = btn.textContent; btn.textContent = label; }
+  out.classList.remove('err');
+  out.innerHTML = `<span class="ok-line">${label}</span>`;
+}
+
+function resetLoading(btn, fallbackLabel) {
+  if (btn) { btn.disabled = false; btn.textContent = btn.dataset.originalText || fallbackLabel; }
+}
+
+function renderOk(out, message) {
+  out.classList.remove('err');
+  out.innerHTML = `<span class="ok-line">${escapeHTML(message)}</span>`;
+}
+
+function renderError(out, message) {
+  out.classList.add('err');
+  out.textContent = message;
+}
+
+function renderInbox(out, messages) {
+  out.classList.remove('err');
+  if (!messages.length) {
+    out.textContent = 'Inbox is empty.';
+    return;
+  }
+  const rows = messages.map((m) => `
+    <tr>
+      <td>${m.isRead ? '' : '<span class="unread-dot"></span>'}${escapeHTML(m.subject || '(no subject)')}</td>
+      <td>${escapeHTML(m.from?.emailAddress?.address || '—')}</td>
+      <td>${new Date(m.receivedDateTime).toLocaleString()}</td>
+    </tr>`).join('');
+  out.innerHTML = `<table><thead><tr><th>Subject</th><th>From</th><th>Received</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderClassification(out, result) {
+  out.classList.remove('err');
+  const codes = (result.property?.code || []).map((c) => `<span class="chip">${escapeHTML(c)}</span>`).join('');
+  const lots = (result.property?.lot || []).map((l) => `<span class="chip">${escapeHTML(l)}</span>`).join('');
+
+  out.innerHTML = `
+    <div class="ok-line">${escapeHTML(result.important?.synopsis || 'Classified')}</div>
+    <div><strong>Subject:</strong> ${escapeHTML(result.subject?.main || '—')} / ${escapeHTML(result.subject?.sub || '—')}</div>
+    <div style="margin-top:6px;"><strong>Property:</strong> ${codes || '—'} ${lots}</div>
+    <div style="margin-top:6px;"><strong>Summary:</strong> ${escapeHTML(result.important?.summary || '—')}</div>
+    <div style="margin-top:6px;"><strong>Completed:</strong> ${result.important?.completed ? 'yes' : 'no'}</div>
+  `;
+}
+
+function escapeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------
+// Network helper
+// ---------------------------------------------------------------------
+
+async function fetchJSON(url, options = {}) {
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
+checkStatusOnLoad();
