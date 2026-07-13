@@ -11,10 +11,20 @@ import { TokenCredentialAuthenticationProvider } from
 import { load } from 'cheerio'; 
 import { insertIntoDB }  from './dbManager.js';
 
+import fs from 'fs/promises';
+import path from 'path';
+import { app } from 'electron';
+
 let _settings = undefined;
 let _deviceCodeCredential = undefined;
 let _userClient = undefined;
 
+
+import { cachePersistencePlugin } from '@azure/identity-cache-persistence';
+useIdentityPlugin(cachePersistencePlugin);
+
+
+const CACHE_FILE = path.join(app.getPath('userData'), 'auth-record.json');
 
 export async function initializeGraphForUserAuth(settings, deviceCodePrompt) {
   // Ensure settings isn't null
@@ -23,46 +33,66 @@ export async function initializeGraphForUserAuth(settings, deviceCodePrompt) {
   }
 
   _settings = settings;
+  let savedRecord = undefined;
+
+  try {
+      const fileContent = await fs.readFile(CACHE_FILE, 'utf8');
+      savedRecord = JSON.parse(fileContent);
+  } catch (err) {
+      console.log('No cached session found. A device code prompt will be required.');
+  }
 
   _deviceCodeCredential = new DeviceCodeCredential({
       clientId: settings.clientId,
       tenantId: settings.tenantId,
-      //clientSecret: settings.clientSecret,
       userPromptCallback: deviceCodePrompt,
+      authenticationRecord: savedRecord ,
+      tokenCachePersistenceOptions: {
+        enabled: true,
+        name: 'email-router-token-cache'
+      }
   });
 
-  //console.log('Client ID being used:', settings.clientId);
+
+  if (!savedRecord) {
+      try {
+
+          const authRecord = await _deviceCodeCredential.authenticate(settings.graphUserScopes);
+          await fs.writeFile(CACHE_FILE, JSON.stringify(authRecord));
+      } catch (error) {
+          console.error('Authentication failed:', error);
+          throw error;
+      }
+  }
+
   const authProvider = new TokenCredentialAuthenticationProvider(
       _deviceCodeCredential,
       {
       scopes: settings.graphUserScopes,
       },
   );
+  
   _userClient = Client.initWithMiddleware({
       authProvider: authProvider,
   });
 }
 
 export async function getUserTokenAsync() {
-// Ensure credential isn't undefined
-if (!_deviceCodeCredential) {
-    throw new Error('Graph has not been initialized for user auth');
-}
+    if (!_deviceCodeCredential) {
+        throw new Error('Graph has not been initialized for user auth');
+    }
 
-// Ensure scopes isn't undefined
-if (!_settings?.graphUserScopes) {
-    throw new Error('Setting "scopes" cannot be undefined');
-}
-
-// Request token with given scopes
-const response = await _deviceCodeCredential.getToken(
-    _settings?.graphUserScopes,
-);
-return response.token;
+    if (!_settings?.graphUserScopes) {
+        throw new Error('Setting "scopes" cannot be undefined');
+    }
+    const response = await _deviceCodeCredential.getToken(
+        _settings?.graphUserScopes,
+    );
+    return response.token;
 }
 
 export async function getUserAsync() {
-    // Ensure client isn't undefined
+
     if (!_userClient) {
         throw new Error('Graph has not been initialized for user auth');
     }

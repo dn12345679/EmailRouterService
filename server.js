@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import settings from './appSettings.js';
+import settings from './appsettings.js';
 import {
   initializeGraphForUserAuth,
   getUserTokenAsync,
@@ -18,19 +18,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------------------------------------------------------------------------
-// Auth state
-// ---------------------------------------------------------------------------
-// This is a single-user local tool, so one process-wide state object is
-// enough — no need for cookies/sessions unless you turn this into something
-// multiple people use at once.
-//
-// If you later figure out persistent token caching (e.g.
-// TokenCachePersistenceOptions on DeviceCodeCredential, or writing/reading
-// the token to disk yourself), this is the spot to check for a valid cached
-// token BEFORE calling initializeGraphForUserAuth + getUserTokenAsync, and
-// jump straight to `status: 'authenticated'` if one exists. Everything else
-// (routes, frontend) stays the same either way.
+
 let authState = {
   status: 'signedOut', // 'signedOut' | 'awaitingCode' | 'authenticated' | 'error'
   deviceCode: null,    // { userCode, verificationUri, message }
@@ -91,9 +79,6 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// ---------------------------------------------------------------------------
-// Job routes — one per option in your old index.js menu
-// ---------------------------------------------------------------------------
 
 app.get('/api/inbox', requireAuth, async (req, res) => {
   try {
@@ -142,4 +127,12 @@ app.post('/api/classify-email', requireAuth, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`UI running at http://localhost:${PORT}`));
+
+export function startServer() {
+  return new Promise((resolve) => {
+    const server = app.listen(PORT, () => {
+      console.log(`UI running at http://localhost:${PORT}`);
+      resolve(server);
+    });
+  });
+}

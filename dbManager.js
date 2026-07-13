@@ -2,7 +2,7 @@ import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
 import { load } from 'cheerio';
-import { CONDITION_BUCKETS, SUBJECT_BUCKETS } from "./appSettings.js"; 
+import { CONDITION_BUCKETS, SUBJECT_BUCKETS } from "./appsettings.js"; 
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
@@ -12,9 +12,16 @@ import fs from 'fs/promises';
 import Anthropic from "@anthropic-ai/sdk";
 const client = new Anthropic();
 
-const region_tracker = './propertyToRegion.json' // Important! Post-processing mapping from property to region
-const response = await fs.readFile(region_tracker, 'utf8')
-const data = JSON.parse(response)
+
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const region_tracker = path.join(__dirname, 'propertyToRegion.json');
+const response = await fs.readFile(region_tracker, 'utf8');
+const data = JSON.parse(response);
 
 
 
