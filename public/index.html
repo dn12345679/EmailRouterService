@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Console — Email Router</title>
+<title>Console: Email Router</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
@@ -12,20 +12,17 @@
 
 <div class="scanlines" aria-hidden="true"></div>
 
-<!-- ===================== SIGN-IN VIEW ===================== -->
-<main id="signin-view" class="view">
+<!-- signin  -->
+<main id="signin-view" class="view hidden">
   <div class="window">
     <div class="window-bar">
-      <span class="dot dot-a"></span>
-      <span class="dot dot-b"></span>
-      <span class="dot dot-c"></span>
       <span class="window-title">device-auth</span>
     </div>
 
     <div class="window-body" id="signin-body">
-      <p class="eyebrow">email-router-test</p>
-      <h1>Sign in to Microsoft Graph</h1>
-      <p class="lede">Pairs this console with your mailbox using a one-time device code. Nothing is cached yet — you'll do this again next time you launch the app.</p>
+      <p class="eyebrow">Email Router</p>
+      <h1>Sign in to the App</h1>
+      <p class="lede">Signin with Microsoft Outlook account. Login will be saved to skip this step in the future. </p>
 
       <button id="start-btn" class="btn btn-primary">Start sign-in</button>
 
@@ -36,7 +33,7 @@
           <button id="copy-btn" class="btn btn-ghost btn-small">Copy</button>
         </div>
         <a id="verify-link" class="btn btn-secondary" href="#" target="_blank" rel="noopener">
-          Open microsoft.com/devicelogin →
+          Open microsoft.com/devicelogin 
         </a>
         <p class="status-line">
           <span class="cursor"></span>
@@ -49,8 +46,8 @@
   </div>
 </main>
 
-<!-- ===================== DASHBOARD VIEW ===================== -->
-<main id="dashboard-view" class="view hidden">
+<!-- dashborad -->
+<main id="dashboard-view" class="view">
   <header class="topbar">
     <div>
       <p class="eyebrow">email-router-test</p>

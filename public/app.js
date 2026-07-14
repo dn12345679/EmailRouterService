@@ -12,9 +12,8 @@ const signedInName = document.getElementById('signed-in-name');
 
 let pollHandle = null;
 
-// ---------------------------------------------------------------------
-// Auth flow
-// ---------------------------------------------------------------------
+
+// Auth 
 
 async function checkStatusOnLoad() {
   const state = await fetchJSON('/api/auth/status');
@@ -92,9 +91,7 @@ function showDashboard(state) {
   signedInName.textContent = name;
 }
 
-// ---------------------------------------------------------------------
 // Job cards
-// ---------------------------------------------------------------------
 
 document.querySelectorAll('.run-btn').forEach((btn) => {
   btn.addEventListener('click', () => runJob(btn.dataset.job, btn));
@@ -156,9 +153,7 @@ async function runJob(job, btn) {
   }
 }
 
-// ---------------------------------------------------------------------
 // Render helpers
-// ---------------------------------------------------------------------
 
 function outputEl(job) {
   return document.querySelector(`[data-output="${job}"]`);
@@ -219,9 +214,7 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
-// ---------------------------------------------------------------------
 // Network helper
-// ---------------------------------------------------------------------
 
 async function fetchJSON(url, options = {}) {
   const res = await fetch(url, {
