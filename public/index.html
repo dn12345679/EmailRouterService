@@ -13,7 +13,7 @@
 <div class="scanlines" aria-hidden="true"></div>
 
 <!-- signin  -->
-<main id="signin-view" class="view hidden">
+<main id="signin-view" class  ="view">
   <div class="window">
     <div class="window-bar">
       <span class="window-title">device-auth</span>
@@ -47,7 +47,7 @@
 </main>
 
 <!-- dashborad -->
-<main id="dashboard-view" class="view">
+<main id="dashboard-view" class="view hidden">
   <header class="topbar">
     <div>
       <p class="eyebrow">email-router-test</p>
@@ -59,10 +59,13 @@
     </div>
   </header>
 
+
+
+
   <section class="grid">
 
     <!-- Job: List inbox -->
-    <article class="card">
+    <article class="card big-card">
       <div class="card-head">
         <span class="job-index">01</span>
         <h2>List inbox</h2>
@@ -72,8 +75,8 @@
       <div class="output" data-output="inbox"></div>
     </article>
 
-    <!-- Job: Send mail -->
-    <article class="card">
+    <!-- Job: Send mail       THIS IS HIDDEN because probably not needed for now-->
+    <article class="card hidden">
       <div class="card-head">
         <span class="job-index">02</span>
         <h2>Send mail</h2>
@@ -94,14 +97,27 @@
       <div class="output" data-output="send-mail"></div>
     </article>
 
+
+    <!-- JOB: Modular buttons-->
+    <article class="card">
+      <div class="card-head">
+        <h2>Jobs</h2>
+      </div>
+      <p class="card-desc">Step by Step email-classification handling</p>
+
+      <button class="btn btn-secondary" data-job="classify-selected">Classify Collected</button>
+      <button class="btn btn-secondary" data-job="group-selected">Check Intents</button> <!-- duplicates, send/set reminders, check thread updates, -->
+      <button class="btn btn-primary" data-job="submit-selected">Submit and Save</button>
+
+    </article>
+
     <!-- Job: Classify all + insert -->
     <article class="card">
       <div class="card-head">
-        <span class="job-index">03</span>
+        
         <h2>Classify all &amp; insert into DB</h2>
       </div>
       <p class="card-desc">Runs the full batch job: pulls threads that need processing, classifies them, and upserts into Postgres.</p>
-      <p class="warn-line">Heads up — <code>insertIntoDB</code> currently classifies one hardcoded conversation ID and returns early before the DB upsert. This job will look like it "worked" but won't insert anything yet.</p>
       <button class="btn btn-primary run-btn" data-job="classify-all">Run batch job</button>
       <div class="output" data-output="classify-all"></div>
     </article>
@@ -109,7 +125,7 @@
     <!-- Job: Classify single email -->
     <article class="card">
       <div class="card-head">
-        <span class="job-index">04</span>
+        
         <h2>Classify email</h2>
       </div>
       <p class="card-desc">Classifies a single thread by conversation ID, without touching the DB.</p>

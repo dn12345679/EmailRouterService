@@ -177,9 +177,9 @@ function extractReplyInfo(msg) {
   };
 }
 
-// handles uploading
-export async function uploadToDB() {
-  if (!_userClient) {
+// part of uploadToDB(), just gets all the unique conversation threads
+export async function getUniqueMessages() {
+ if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
   }
   
@@ -192,12 +192,10 @@ export async function uploadToDB() {
     const thread = await getConversationMessagesAsync(id);
     const threadMessages = thread.value;
 
-    // sorting all messages by date and timeproperly
-    const sorted = threadMessages.sort((a, b) => 
+    const sorted = threadMessages.sort((a, b) =>
       new Date(a.receivedDateTime) - new Date(b.receivedDateTime)
     );
 
-    // get the full body content and the email address associated with their text
     const fullBody = sorted.map(msg => {
       const text = extractBodyTextWithCheerio(msg.body?.content ?? '').join(" ");
       return `[${msg.receivedDateTime} - ${msg.from?.emailAddress?.address}]:\n${text}`;
@@ -206,28 +204,30 @@ export async function uploadToDB() {
     const latest = sorted[sorted.length - 1];
     const replyInfo = extractReplyInfo(latest);
 
-    // still grabs every email 
-    for (const threadMsg of threadMessages) {
-      const replyInfo = extractReplyInfo(threadMsg);
-      const data = {
-        "id": latest.id,
-        "conversationId": id,
-        "status": 'read',
-        "created": sorted[0].receivedDateTime,
-        "forwarded": false, // if it already exists in the database, it will be true
-        "updated": latest.receivedDateTime ,
-        "sender": sorted[0].from?.emailAddress?.address,
-        "subject": latest.subject,
-        "synopsis": null, // if it already exists in the database, it will be checked again.
-        "body": fullBody,
-        "in_reply_to": replyInfo.inReplyTo ?? null
-      };
-      if (id == "AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAIRtK3CVkxRHqi9C7wFif9Y="){
-        console.log(data)
-      }
-      output.push(data); 
-    }
+    output.push({
+      id: latest.id,
+      conversationId: id,
+      status: 'read',
+      created: sorted[0].receivedDateTime,
+      forwarded: false,
+      updated: latest.receivedDateTime,
+      sender: sorted[0].from?.emailAddress?.address,
+      subject: latest.subject,
+      synopsis: null,
+      body: fullBody,
+      in_reply_to: replyInfo.inReplyTo ?? null,
+    });
   }
+  return output;
+}
+
+// handles uploading
+export async function uploadToDB() {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  
+  const output = await getUniqueMessages()
 
   console.log(`Total emails: ${output.length}`);
 

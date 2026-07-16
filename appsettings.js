@@ -15,7 +15,9 @@ dotenv.config({ path: path.join(__dirname, '.env') });
     1. order matters here, make sure that if you add a new thing, you add to the end of the list
     2. Any change to the buckets will be reflected automatically in the ROUTING_CONFIG  object
     3. If you add a new "Main Subject", but dont intend to add any "Subcategories", Be sure to include a default Subcategory that is related to the Main category since its guaranteed to be that anyway. 
-  */
+    4. If SUBJECT_BUCKETS ever changes format, also change dbManager.classification_to_email because that is a direct dependency.
+  
+    */
 
 // subjects referenced in ROUTING_CONFIG
 export const SUBJECT_BUCKETS = {
@@ -88,7 +90,7 @@ export const ROUTING_CONFIG = {
       email: "igoroliveira@HurstSonLLC.com",
       rules: [
         {
-          main: 0, // "Tech Support"
+          main: 0, // "tech support"
           subject: [1, 2, 4, 5], // Email, Onedrive, Rent Roll, RDC
           conditions: {} // no conditions have to be true for igor
         }

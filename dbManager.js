@@ -2,7 +2,7 @@ import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
 import { load } from 'cheerio';
-import { CONDITION_BUCKETS, SUBJECT_BUCKETS } from "./appsettings.js"; 
+import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS } from "./appsettings.js"; 
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
@@ -98,6 +98,20 @@ the emails in the chain are in, as noted by the date and time of received. The m
 ${TEMPLATE}
 
 `
+
+
+
+
+const intents = {
+  forward:    [], // [conversationId, recipients]
+  duplicate:  [], // [newConvId, existingConvId]
+  complete:   [], // [conversationId]
+  reminder:   [], // [conversationId]
+  supervisor: [], // [conversationId]
+};
+
+
+
 
 // testing for now. Returns a classification of the email based on a prompt
 async function LLM_classification(prompt) {
@@ -211,11 +225,63 @@ export async function email_needs_processing(emails) {
   }
 }
 
+// Returns the conversation_id of a similar existing email
+async function find_similar_synopsis(synopsis, propertyCodes, lots, currentConversationId) {
+  const result = await pool.query(`
+    SELECT conversation_id, synopsis, similarity(synopsis, $1) as score
+    FROM email
+    WHERE 
+      property_code && $2::text[]   
+      AND lot && $3::text[]            
+      AND conversation_id != $4     
+      AND similarity(synopsis, $1) > 0.6 
+    ORDER BY score DESC
+    LIMIT 1;
+  `, [synopsis, propertyCodes, lots, currentConversationId]);
+
+  return result.rows[0] ?? null; // { conversation_id, synopsis, score } or null
+}
+
+
+function conditionsMatch(ruleConditions, context) {
+  return Object.entries(ruleConditions).every(
+    ([key, expectedValue]) => context[key] === expectedValue
+  );
+}
 
 // from settings.js config, converts the outpuyt to the email addresses (must go through classify_email_by_ID first to get the JSON object)
-async function classification_to_email(LLM_output) {
+export async function classification_to_email(LLM_output) {
   try{
-    
+    const main = LLM_output.subject.main;
+    const sub = LLM_output.subject.sub;
+
+    const bucket = SUBJECT_BUCKETS[main];// get the overall bucket
+    if (!bucket) return [];
+
+    const mainIndex = Object.keys(SUBJECT_BUCKETS).indexOf(main);
+    const subjectIndex = bucket.indexOf(sub);
+    if (subjectIndex === -1) return [];
+
+    const context = LLM_output.conditions; // for checking conditional brnach
+
+    const matches = [];
+    for (const [name, person] of Object.entries(ROUTING_CONFIG)) {
+      for (const rule of person.rules) {
+        if (rule.main === mainIndex && rule.subject.includes(subjectIndex)) {
+          const mainMatches = rule.main === mainIndex;
+          const subjectMatches = rule.subject.includes(subjectIndex);
+          
+          const condMatches = conditionsMatch(rule.conditions ?? {}, context);
+
+          if (mainMatches && subjectMatches && condMatches) {
+            matches.push([name, person.email]);
+            break; // no double count
+          }
+        }
+      }
+    }
+
+    return matches;
   }
   catch(error) {
     console.log(error)
@@ -233,7 +299,7 @@ export async function insertIntoDB(emails) {
     console.log('connected to db');
 
 
-
+    let output = [];
         // Note I am not checking if status = status.completed because it is possible for an email to be completed but original party sends an additional request?
         // can be fixed by having a pregenerated prompt that tells the recipient to simply send a new email thread to continue the problem
     const updated_conversation_ids = new Set(await email_needs_processing(emails));
@@ -243,16 +309,32 @@ export async function insertIntoDB(emails) {
       if (updated_conversation_ids.has(email.conversationId)){
 
         // steps 2 and 1 (classify first, and then upload all to db). skipping the unread -> read part, but oh well
-        const classification = await classify_email_by_ID("AAQkADQzNTI4NjQ3LTkwYmItNDljYS1hZmQ1LTc2YzNjMmM2MTQ0NAAQAIRtK3CVkxRHqi9C7wFif9Y=") 
+        const classification = await classify_email_by_ID(email.conversationId) // json 
+        
+        // feed classify_email_by_ID directly to get recipients
+        const recipients = await classification_to_email(classification); // [ ["MyName", "email@gmail.com"], ["helllo", "helo@gmail.com"] ]
 
-        console.log(classification)
-        return;
+        const similar = await find_similar_synopsis(
+          classification.important.synopsis,
+          classification.property.code,  // e.g. ["BV"]
+          classification.property.lot,   // e.g. ["BV_99"]
+          email.conversationId
+        );
+
+
+        output.push({classification, recipients, similar})
+        if (similar) {
+          intents.duplicate.push([email.conversationId, similar.conversation_id]);
+          
+          continue; // skip insert for duplicates
+        } 
+
         
         await pool.query(`
         INSERT INTO email (
           conversation_id, id, status, created, forwarded, updated,
-          sender, subject, body, in_reply_to
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          sender, subject, body, in_reply_to, synopsis, property_code, lot
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         ON CONFLICT (conversation_id) DO UPDATE SET
           id          = EXCLUDED.id,
           status      = EXCLUDED.status,
@@ -261,10 +343,12 @@ export async function insertIntoDB(emails) {
           sender      = EXCLUDED.sender,
           subject     = EXCLUDED.subject,
           body        = EXCLUDED.body,
-          in_reply_to = EXCLUDED.in_reply_to
-          -- forwarded: intentionally omitted, set manually
-          -- synopsis:  intentionally omitted, set by AI later
-          -- property_code, lot: intentionally omitted, set by AI later
+          in_reply_to = EXCLUDED.in_reply_to,
+
+          forwarded = EXCLUDED.forwarded,
+          synopsis = EXCLUDED.synopsis,
+          property_code = EXCLUDED.property_code ,
+          lot = EXCLUDED.lot
         `, [
           email.conversationId,  
           email.id,               
@@ -275,7 +359,10 @@ export async function insertIntoDB(emails) {
           email.sender,         
           email.subject,         
           email.body,           
-          email.in_reply_to || null 
+          email.in_reply_to || null ,
+          classification.important.synopsis,
+          classification.property.code || null,
+          classification.property.lot || null,
         ]);
         
         // maybe figure out a way to batch call= to save compute time? 
@@ -284,6 +371,7 @@ export async function insertIntoDB(emails) {
 
     console.log(`Inserted ${emails.length} emails`);
     console.log(emails);
+    return output
   } catch (err) {
     console.error(`Error: ${err.message}`);
   }

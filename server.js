@@ -10,8 +10,13 @@ import {
   getInboxAsync,
   sendMailAsync,
   uploadToDB,
+  getUniqueMessages,
 } from './graphHelper.js';
-import { classify_email_by_ID } from './dbManager.js';
+import { 
+  insertIntoDB, 
+  classify_email_by_ID,
+  classification_to_email,
+ } from './dbManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -31,7 +36,7 @@ app.get('/api/auth/status', (req, res) => {
 });
 
 app.post('/api/auth/start', async (req, res) => {
-  // already in progress or already signed in — don't kick off a second flow
+  // already in progress or already signed in
   if (authState.status === 'awaitingCode' || authState.status === 'authenticated') {
     return res.json(authState);
   }
@@ -82,13 +87,16 @@ function requireAuth(req, res, next) {
 
 app.get('/api/inbox', requireAuth, async (req, res) => {
   try {
-    const msgs = await getInboxAsync();
-    res.json(msgs.value);
+    //const msgs = await getInboxAsync();
+    const msgs = await getUniqueMessages();
+    res.json(msgs);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
+
+
 
 app.post('/api/send-mail', requireAuth, async (req, res) => {
   const { subject, body, recipient } = req.body ?? {};
@@ -104,6 +112,21 @@ app.post('/api/send-mail', requireAuth, async (req, res) => {
   }
 });
 
+
+app.post('/api/classify-selected', requireAuth, async (req, res) => {
+  const { messages } = req.body ?? {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'messages array is required' });
+  }
+  try {
+    const result = await insertIntoDB(messages);
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+})
+
 app.post('/api/classify-all', requireAuth, async (req, res) => {
   try {
     const result = await uploadToDB();
@@ -114,11 +137,13 @@ app.post('/api/classify-all', requireAuth, async (req, res) => {
   }
 });
 
+
 app.post('/api/classify-email', requireAuth, async (req, res) => {
   const { id } = req.body ?? {};
   if (!id) return res.status(400).json({ error: 'Conversation ID is required' });
   try {
     const classification = await classify_email_by_ID(id);
+    const recipient = await classification_to_email(classification)
     res.json(classification);
   } catch (err) {
     console.error(err);
