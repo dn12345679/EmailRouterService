@@ -110,6 +110,9 @@ const intents = {
   supervisor: [], // [conversationId]
 };
 
+const NO_CODE = 'none';
+const NO_LOT = 'unspecified';
+
 
 
 
@@ -228,14 +231,14 @@ export async function email_needs_processing(emails) {
 // Returns the conversation_id of a similar existing email
 async function find_similar_synopsis(synopsis, propertyCodes, lots, currentConversationId) {
   const result = await pool.query(`
-    SELECT conversation_id, synopsis, similarity(synopsis, $1) as score
-    FROM email
-    WHERE 
-      property_code && $2::text[]   
-      AND lot && $3::text[]            
-      AND conversation_id != $4     
-      AND similarity(synopsis, $1) > 0.6 
-    ORDER BY score DESC
+    SELECT e.conversation_id, e.synopsis, similarity(e.synopsis, $1) as score
+    FROM email e
+    JOIN email_property ep ON ep.conversation_id = e.conversation_id
+    WHERE ep.property_code = ANY($2::text[])
+      AND ep.lot = ANY($3::text[])
+      AND e.conversation_id != $4
+    GROUP BY e.conversation_id, e.synopsis
+    ORDER BY similarity(e.synopsis, $1) DESC
     LIMIT 1;
   `, [synopsis, propertyCodes, lots, currentConversationId]);
 
@@ -289,52 +292,76 @@ export async function classification_to_email(LLM_output) {
 }
 
 
-// Given a set of emails from graphHelper.uploadToDB(), inserts into local postgres database.
-// ensure table exists and .env contains login credentials
-// no AI processing here yet.
+// splits classification.property.{code,lot} into (code, lot) pairs
+// and replaces the row in email property (because they changed)
+async function upsertPropertyPairs(client, conversationId, codes, lots) {
+  if (typeof conversationId !== 'string') {
+    throw new Error('upsertPropertyPairs: conversationId must be a string — check argument order');
+  }
+  const pairs = [];
+
+  for (const entry of lots || []) {
+    const [prefix, lotNum] = entry.split('_');
+    const code = prefix === 'none' ? NO_CODE : prefix;
+    pairs.push({ code, lot: lotNum ?? NO_LOT });
+  }
+
+  for (const code of codes || []) {
+    if (!pairs.some(p => p.code === code)) {
+      pairs.push({ code, lot: NO_LOT });
+    }
+  }
+
+  if (!pairs.length) {
+    pairs.push({ code: NO_CODE, lot: NO_LOT });
+  }
+
+  await client.query(`DELETE FROM email_property WHERE conversation_id = $1`, [conversationId]);
+
+  for (const { code, lot } of pairs) {
+    await client.query(`
+      INSERT INTO email_property (conversation_id, property_code, lot)
+      VALUES ($1, $2, $3)
+      ON CONFLICT DO NOTHING
+    `, [conversationId, code, lot]);
+  }
+}
+
+
+
 export async function insertIntoDB(emails) {
+  const client = await pool.connect();
   try {
-
-    // does an u psert on initial and post classification
     console.log('connected to db');
-
+    await client.query('BEGIN');
 
     let output = [];
-        // Note I am not checking if status = status.completed because it is possible for an email to be completed but original party sends an additional request?
-        // can be fixed by having a pregenerated prompt that tells the recipient to simply send a new email thread to continue the problem
     const updated_conversation_ids = new Set(await email_needs_processing(emails));
 
     for (const email of emails) {
-      // only continue checks if conversationid is in need of update
-      if (updated_conversation_ids.has(email.conversationId)){
+      if (!updated_conversation_ids.has(email.conversationId)) continue;
 
-        // steps 2 and 1 (classify first, and then upload all to db). skipping the unread -> read part, but oh well
-        const classification = await classify_email_by_ID(email.conversationId) // json 
-        
-        // feed classify_email_by_ID directly to get recipients
-        const recipients = await classification_to_email(classification); // [ ["MyName", "email@gmail.com"], ["helllo", "helo@gmail.com"] ]
+      const classification = await classify_email_by_ID(email.conversationId);
+      const recipients = await classification_to_email(classification);
 
-        const similar = await find_similar_synopsis(
-          classification.important.synopsis,
-          classification.property.code,  // e.g. ["BV"]
-          classification.property.lot,   // e.g. ["BV_99"]
-          email.conversationId
-        );
+      const similar = await find_similar_synopsis(
+        classification.important.synopsis,
+        classification.property.code,
+        classification.property.lot,
+        email.conversationId
+      );
 
+      output.push({ classification, recipients, similar });
+      if (similar) {
+        intents.duplicate.push([email.conversationId, similar.conversation_id]);
+        continue;
+      }
 
-        output.push({classification, recipients, similar})
-        if (similar) {
-          intents.duplicate.push([email.conversationId, similar.conversation_id]);
-          
-          continue; // skip insert for duplicates
-        } 
-
-        
-        await pool.query(`
+      await client.query(`
         INSERT INTO email (
           conversation_id, id, status, created, forwarded, updated,
-          sender, subject, body, in_reply_to, synopsis, property_code, lot
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          sender, subject, body, in_reply_to, synopsis
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (conversation_id) DO UPDATE SET
           id          = EXCLUDED.id,
           status      = EXCLUDED.status,
@@ -344,36 +371,31 @@ export async function insertIntoDB(emails) {
           subject     = EXCLUDED.subject,
           body        = EXCLUDED.body,
           in_reply_to = EXCLUDED.in_reply_to,
+          forwarded   = EXCLUDED.forwarded,
+          synopsis    = EXCLUDED.synopsis
+      `, [
+        email.conversationId, email.id, email.status, email.created || null,
+        email.forwarded ?? null, email.updated, email.sender, email.subject,
+        email.body, email.in_reply_to || null, classification.important.synopsis,
+      ]);
 
-          forwarded = EXCLUDED.forwarded,
-          synopsis = EXCLUDED.synopsis,
-          property_code = EXCLUDED.property_code ,
-          lot = EXCLUDED.lot
-        `, [
-          email.conversationId,  
-          email.id,               
-          email.status,           
-          email.created || null,  
-          email.forwarded ?? null, // first insert only
-          email.updated,        
-          email.sender,         
-          email.subject,         
-          email.body,           
-          email.in_reply_to || null ,
-          classification.important.synopsis,
-          classification.property.code || null,
-          classification.property.lot || null,
-        ]);
-        
-        // maybe figure out a way to batch call= to save compute time? 
-      }
+      await upsertPropertyPairs(
+        client,
+        email.conversationId,
+        classification.property.code,
+        classification.property.lot
+      );
     }
 
-    console.log(`Inserted ${emails.length} emails`);
-    console.log(emails);
-    return output
+    await client.query('COMMIT');
+    console.log(`Processed ${emails.length} emails`);
+    return output;
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error(`Error: ${err.message}`);
+    throw err; // err 500
+  } finally {
+    client.release();
   }
 }
 

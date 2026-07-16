@@ -28,6 +28,9 @@ async function checkStatusOnLoad() {
   }
 }
 
+
+
+// th is part is for the sign in
 startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
   startBtn.textContent = 'Requesting code…';
@@ -44,6 +47,8 @@ startBtn.addEventListener('click', async () => {
     startBtn.textContent = 'Start sign-in';
   }
 });
+
+
 
 copyBtn.addEventListener('click', () => {
   navigator.clipboard.writeText(userCodeEl.textContent.trim());
@@ -92,8 +97,14 @@ function showDashboard(state) {
   signedInName.textContent = name;
 }
 
-// Job cards
 
+
+
+
+
+
+
+// all jobs
 document.querySelectorAll('.run-btn').forEach((btn) => {
   btn.addEventListener('click', () => runJob(btn.dataset.job, btn));
 });
@@ -147,14 +158,16 @@ async function runJob(job, btn) {
       messages = msgs; // assigns to the temp variable
       renderInbox(out, messages);
     }
-  else if (job === 'classify-selected') {
-    const result = await fetchJSON('/api/classify-selected', {
-      method: 'POST',
-      body: JSON.stringify({ messages }),
-    });
-    classified = result;
-    renderClassifiedList(out, classified); // was renderClassification
-  }
+    else if (job === 'classify-selected') {
+      console.log("hi")
+      const result = await fetchJSON('/api/classify-selected', {
+        method: 'POST',
+        body: JSON.stringify({ messages }),
+      });
+      classified = result;
+      console.log(classified)
+      renderClassifiedList(out, classified); // was renderClassification
+    }
     else if (job === 'classify-all') {
       const result = await fetchJSON('/api/classify-all', { method: 'POST' });
       renderOk(out, `Done. Checked ${result.count} email(s).`);
