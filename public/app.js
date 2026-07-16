@@ -149,7 +149,7 @@ document.getElementById('classify-email-form').addEventListener('submit', async 
 });
 
 async function runJob(job, btn) {
-  const out = outputEl(job);
+  let out = outputEl(job);
   setLoading(btn, out, 'Running…');
 
   try {
@@ -159,14 +159,14 @@ async function runJob(job, btn) {
       renderInbox(out, messages);
     }
     else if (job === 'classify-selected') {
-      console.log("hi")
       const result = await fetchJSON('/api/classify-selected', {
         method: 'POST',
         body: JSON.stringify({ messages }),
       });
       classified = result;
       console.log(classified)
-      renderClassifiedList(out, classified); // was renderClassification
+      out = outputEl('inbox'); // want to bundle all stuff into 1 UI for consistency
+      renderClassifiedList(out, {messages, classified}); 
     }
     else if (job === 'classify-all') {
       const result = await fetchJSON('/api/classify-all', { method: 'POST' });
@@ -209,23 +209,42 @@ function renderError(out, message) {
 
 function renderClassifiedList(out, items) {
   out.classList.remove('err');
-  if (!items || !items.length) {
-    out.textContent = 'No emails needed classification.';
+  const { messages, classified } = items;
+
+  if (!messages || !messages.length) {
+    out.textContent = 'Inbox is empty.';
     return;
   }
-  const rows = items.map(({ classification: c, recipients, similar }) => {
-    const recipientNames = (recipients || []).map(r => escapeHTML(r[0])).join(', ') || '—';
+
+  const classifiedById = new Map(
+    (classified || []).map(item => [item.conversationId, item])
+  );
+
+  const rows = messages.map((m) => {
+    const match = classifiedById.get(m.conversationId);
+    const c = match?.classification;
+    const recipientNames = (match?.recipients || []).map(r => escapeHTML(r[0])).join(', ') || '—';
+
     return `
       <tr>
-        <td>${escapeHTML(c.important?.synopsis || '—')}</td>
-        <td>${escapeHTML(c.subject?.main || '—')} / ${escapeHTML(c.subject?.sub || '—')}</td>
+        <td>${escapeHTML(m.subject || '(no subject)')}</td>
+        <td>${escapeHTML(m.sender || '—')}</td>
+        <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
+        <td>${escapeHTML(c?.important?.synopsis || (match ? '—' : 'not reprocessed'))}</td>
+        <td>${escapeHTML(c?.subject?.main || '—')} / ${escapeHTML(c?.subject?.sub || '—')}</td>
         <td>${recipientNames}</td>
-        <td>${c.important?.completed ? 'yes' : 'no'}</td>
-        <td>${similar ? 'possible duplicate' : ''}</td>
+        <td>${c?.important?.completed ? 'yes' : c ? 'no' : '—'}</td>
+        <td>${match?.similar ? 'possible duplicate' : ''}</td>
       </tr>`;
   }).join('');
+
   out.innerHTML = `<table>
-    <thead><tr><th>Synopsis</th><th>Subject</th><th>Routed to</th><th>Completed</th><th>Flags</th></tr></thead>
+    <thead>
+      <tr>
+        <th>Subject</th><th>From</th><th>Updated</th>
+        <th>Synopsis</th><th>Subject bucket</th><th>Routed to</th><th>Completed</th><th>Flags</th>
+      </tr>
+    </thead>
     <tbody>${rows}</tbody>
   </table>`;
 }

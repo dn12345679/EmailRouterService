@@ -351,7 +351,7 @@ export async function insertIntoDB(emails) {
         email.conversationId
       );
 
-      output.push({ classification, recipients, similar });
+      output.push({conversationId: email.conversationId, classification, recipients, similar });
       if (similar) {
         intents.duplicate.push([email.conversationId, similar.conversation_id]);
         continue;
