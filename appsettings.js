@@ -83,6 +83,42 @@ export const CONDITION_BUCKETS = {
 };
 
 
+// 
+export const REMINDER_CONFIG =
+  {
+    "Screening Only": 
+      {
+        repeat: true,
+        repeat_interval: [2], // 2 days per cycle, repeat until 'complete'
+
+        completeByDate: false
+      },
+    "Screening with Completed and Generated Lease":
+      {
+        repeat: true,
+        repeat_interval: [7],
+
+        completeByDate:false
+        
+      },
+    "Specific Deadline":
+      {
+        repeat: true,
+        repeat_interval: [4, 2, 1],
+
+        completeByDate: true
+      },
+    "Intent to Vacate":
+      {
+        repeat: false,
+        repeat_interval: [],
+
+        completeByDate: true
+      }
+    
+  }
+
+
 // actual people with emails configuration
 export const ROUTING_CONFIG = {
   "Igor Oliveira":

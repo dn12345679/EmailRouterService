@@ -103,10 +103,11 @@ ${TEMPLATE}
 
 
 const intents = {
-  forward:    [], // [conversationId, recipients]
-  duplicate:  [], // [newConvId, existingConvId]
+  forward:    [], // [conversationId, recipients]    done BEFORE 
   complete:   [], // [conversationId]
-  reminder:   [], // [conversationId]
+  duplicate:  [], // [newConvId, existingConvId]
+  
+  reminder:   [], // [conversationId] // DONE AFTer
   supervisor: [], // [conversationId]
 };
 
@@ -216,7 +217,7 @@ export async function email_needs_processing(emails) {
       WHERE m.conversation_id IS NULL                             
         OR m.updated IS DISTINCT FROM t.updated                
         OR (                                                       
-          m.status != 'completed'
+          m.status != 'complete'
           AND r.reminder_date IS NOT NULL
           AND r.reminder_date < NOW()
         )
@@ -251,6 +252,66 @@ function conditionsMatch(ruleConditions, context) {
     ([key, expectedValue]) => context[key] === expectedValue
   );
 }
+
+
+export async function getReadEmailsWithIntents() {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM email
+      WHERE status = 'read'
+    `);
+    const messages = result.rows;
+    const relevantIds = new Set(messages.map(m => m.conversation_id));
+
+    // forward: any read email that hasn't actually been forwarded yet,
+    // regardless of whether it was already in the db (a user may classify
+    // an email without ever performing the forward action on it)
+    const forward = messages
+      .filter(m => !m.forwarded)
+      .map(m => m.conversation_id);
+
+    // complete/duplicate are populated earlier by insertIntoDB(), during
+    // classification (classify-selected runs before group-selected). Pull
+    // from the module-level store, scoped to the emails currently in view.
+    const complete = intents.complete.filter(id => relevantIds.has(id));
+    const duplicate = intents.duplicate.filter(([newId]) => relevantIds.has(newId));
+
+    // reminder/supervisor are recomputed fresh every call
+    const reminderIntents = { reminder: [], supervisor: [] };
+    await checkReminders(messages, reminderIntents);
+
+    const intentsByConversationId = new Map();
+
+    for (const convId of forward) {
+      intentsByConversationId.set(convId, 'forward');
+    }
+    for (const [newConvId] of duplicate) {
+      intentsByConversationId.set(newConvId, 'duplicate');
+    }
+    for (const convId of complete) {
+      intentsByConversationId.set(convId, 'complete');
+    }
+    for (const convId of reminderIntents.reminder) {
+      if (!intentsByConversationId.has(convId)) {
+        intentsByConversationId.set(convId, 'reminder');
+      }
+    }
+    for (const convId of reminderIntents.supervisor) {
+      intentsByConversationId.set(convId, 'supervisor');
+    }
+
+    return {
+      messages,
+      intents: Object.fromEntries(intentsByConversationId)
+    };
+  } catch (err) {
+    console.error(err);
+    throw err;
+  }
+}
+
+
 
 // from settings.js config, converts the outpuyt to the email addresses (must go through classify_email_by_ID first to get the JSON object)
 export async function classification_to_email(LLM_output) {
@@ -329,6 +390,7 @@ async function upsertPropertyPairs(client, conversationId, codes, lots) {
 
 
 
+// INITIAL INSERT ONLY, INTENTS occur after
 export async function insertIntoDB(emails) {
   const client = await pool.connect();
   try {
@@ -351,12 +413,23 @@ export async function insertIntoDB(emails) {
         email.conversationId
       );
 
+
       output.push({conversationId: email.conversationId, classification, recipients, similar });
+      // similarity score checking
       if (similar) {
         intents.duplicate.push([email.conversationId, similar.conversation_id]);
         continue;
       }
+      if (classification.important.completed) {
+        intents.complete.push(email.conversationId);
+        email.status = 'complete'; // manually set the new status
+      }
 
+
+
+
+        
+      // add all  mails
       await client.query(`
         INSERT INTO email (
           conversation_id, id, status, created, forwarded, updated,
@@ -385,11 +458,33 @@ export async function insertIntoDB(emails) {
         classification.property.code,
         classification.property.lot
       );
+
+
+      // add all recipients (premature until delete later)
+      if (recipients.length > 0) {
+          for (const [name, recipientEmail] of recipients) { 
+            await client.query(`
+              INSERT INTO recipients (conversation_id, intended_recipient, reminder_date, reminder_count)
+              VALUES ($1, $2, $3, $4)
+              ON CONFLICT (conversation_id, intended_recipient) DO NOTHING
+            `, [
+              email.conversationId,   
+              recipientEmail,         
+              getReminderDateForRecipient(name, classification.subject.main, classification.subject.sub),
+              0
+            ]);
+          }
+        }
     }
 
     await client.query('COMMIT');
     console.log(`Processed ${emails.length} emails`);
-    return output;
+    
+  
+    return output; // 
+
+
+
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(`Error: ${err.message}`);
@@ -399,6 +494,89 @@ export async function insertIntoDB(emails) {
   }
 }
 
+
+// DEFAULT for now, until i fugre out reminder stuff
+function getReminderDateForRecipient(name, mainSubject, subSubject) {
+  const now = new Date();
+  now.setDate(now.getDate() + 1);
+  return now;
+}
+
+export async function checkReminders(emails, intents) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT conversation_id, intended_recipient, reminder_count
+      FROM recipients
+      WHERE reminder_date IS NOT NULL
+        AND reminder_date < NOW()
+    `);
+
+    //  {conversationId: [{recipient, count}, ]}
+    const remindersMap = new Map();
+    for (const row of result.rows) {
+      if (!remindersMap.has(row.conversation_id)) {
+        remindersMap.set(row.conversation_id, []);
+      }
+      remindersMap.get(row.conversation_id).push({
+        recipient: row.intended_recipient,
+        count: row.reminder_count
+      });
+    }
+
+    // then loop over all emails and check for reminders
+    for (const email of emails) {
+      // getReadEmailsWithIntents passes db rows (conversation_id), other callers may pass conversationId
+      const convId = email.conversation_id ?? email.conversationId;
+      const recipientsWithReminders = remindersMap.get(convId);
+
+      if (recipientsWithReminders) {
+        // check if at least 1 recipient still has reminder_count < 8
+        const hasActivReminders = recipientsWithReminders.some(r => r.count < 8);
+
+        if (hasActivReminders) {
+          intents.reminder.push(convId);
+
+          for (const { recipient, count } of recipientsWithReminders) {
+            if (count < 8) {
+              await client.query(`
+                UPDATE recipients
+                SET reminder_count = reminder_count + 1
+                WHERE conversation_id = $1
+                  AND intended_recipient = $2
+              `, [convId, recipient]);
+            }
+          }
+        } else {
+          intents.supervisor.push(convId);
+
+          await client.query(`
+            UPDATE recipients
+            SET reminder_date = NULL
+            WHERE conversation_id = $1
+          `, [convId]);
+        }
+      }
+    }
+  } finally {
+    client.release();
+  }
+}
+
+export async function intentsFromDB() {
+  const result = await pool.query(`
+      SELECT *
+      FROM email m
+      WHERE m.status = 'read'
+    `)
+  await checkReminders(result.rows) // populate reminder and supervisor
+
+  return intents;
+}
+
+
+
+
 async function fetch_read() {
   const result = await pool.query(`
     SELECT m.conversationId
@@ -406,7 +584,6 @@ async function fetch_read() {
     WHERE m.status = 'read'
   `);
 }
-
 
 
 
@@ -426,9 +603,3 @@ function getValById(emails, colSearch, colSearchValue, colTarget) {
   const email = emails.find(item => item[colSearch] === colSearchValue);
   return email[colTarget];
 }
-
-
-
-
-
-

@@ -16,6 +16,8 @@ import {
   insertIntoDB, 
   classify_email_by_ID,
   classification_to_email,
+  checkReminders,
+  getReadEmailsWithIntents
  } from './dbManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,6 +115,17 @@ app.post('/api/send-mail', requireAuth, async (req, res) => {
 });
 
 
+app.post('/api/group-selected', requireAuth, async (req, res) => {
+  try {
+    const result = await getReadEmailsWithIntents();
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+})
+
+
 app.post('/api/classify-selected', requireAuth, async (req, res) => {
   const { messages } = req.body ?? {};
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -126,6 +139,7 @@ app.post('/api/classify-selected', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 })
+
 
 app.post('/api/classify-all', requireAuth, async (req, res) => {
   try {

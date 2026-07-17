@@ -298,7 +298,7 @@ a { color: var(--accent); }
   flex-direction: column;
 }
 .big-card {
-  grid-column: span 2;
+  grid-column: span 3;
   grid-row: span 2;
 }
 @media (max-width: 700px) {

@@ -13,6 +13,7 @@ const signedInName = document.getElementById('signed-in-name');
 let pollHandle = null;
 let messages = []; // list of UNIQUE message objects
 let classified = [];
+let intents = [];
 
 // Auth 
 
@@ -168,6 +169,12 @@ async function runJob(job, btn) {
       out = outputEl('inbox'); // want to bundle all stuff into 1 UI for consistency
       renderClassifiedList(out, {messages, classified}); 
     }
+    else if (job === 'group-selected') {
+      const result = await fetchJSON('/api/group-selected', { method: 'POST' });
+      //out = outputEl('inbox')
+      intents = result;
+      renderIntentsList(out, {messages, classified, intents}); 
+    }
     else if (job === 'classify-all') {
       const result = await fetchJSON('/api/classify-all', { method: 'POST' });
       renderOk(out, `Done. Checked ${result.count} email(s).`);
@@ -282,6 +289,53 @@ function renderClassification(out, result) {
     <div style="margin-top:6px;"><strong>Completed:</strong> ${result.important?.completed ? 'yes' : 'no'}</div>
   `;
 }
+
+
+
+function renderIntentsList(out, items) {
+
+
+  
+  out.classList.remove('err');
+  const { messages, classified, intents } = items;
+
+  if (!messages || !messages.length) {
+    out.textContent = 'Inbox is empty.';
+    return;
+  }
+  console.log(classified)
+  const rows = messages.map((m) => {
+    const intent = intents[m.conversation_id] || '—';
+    const intentColor = {
+      'forward': 'lightblue',
+      'duplicate': 'orange',
+      'complete': 'green',
+      'reminder': 'yellow',
+      'supervisor': 'red'
+    }[intent] || 'gray';
+    
+    return `
+      <tr>
+        <td>${escapeHTML(m.subject || '(no subject)')}</td>
+        <td>${escapeHTML(m.sender || '—')}</td>
+        <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
+        <td>${escapeHTML(m.synopsis || '—')}</td>
+        <td style="background-color: ${intentColor}; color: white; font-weight: bold;">
+          ${escapeHTML(intent)}
+        </td>
+      </tr>`;
+  }).join('');
+
+  out.innerHTML = `<table>
+    <thead>
+      <tr>
+        <th>Subject</th><th>From</th><th>Updated</th><th>Synopsis</th><th>Intent</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 
 function escapeHTML(str) {
   const div = document.createElement('div');

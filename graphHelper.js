@@ -159,7 +159,7 @@ export async function getInboxAsync() {
     .api('/me/mailFolders/inbox/messages')
     .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
     .header('Prefer', 'outlook.body-content-type="text"')
-    .top(10)
+    .top(2)
     .orderby('receivedDateTime ASC')
     .get();
 }
@@ -230,12 +230,6 @@ export async function uploadToDB() {
   const output = await getUniqueMessages()
 
   console.log(`Total emails: ${output.length}`);
-
-  for (let i = 1; i < 3; i++) {
-    //console.log(output[i])
-    //console.log('')
-    //console.log(JSON.stringify(output[i], "", 2));  // EXAMPLE of output
-  }
   
   
 
