@@ -159,8 +159,8 @@ export async function getInboxAsync() {
     .api('/me/mailFolders/inbox/messages')
     .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
     .header('Prefer', 'outlook.body-content-type="text"')
-    .top(2)
-    .orderby('receivedDateTime ASC')
+    .top(1)
+    .orderby('receivedDateTime DESC')
     .get();
 }
 

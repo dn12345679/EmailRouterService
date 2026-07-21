@@ -63,9 +63,14 @@ export const SUBJECT_BUCKETS = {
     "Lot or Home Modification",
   ],
 
+
+
   "Miscellaneous": [
     "Miscellaneous"
-  ]
+  ],
+  "Rescission Related": [
+    "Rescission Related question"
+  ],
 };
 
 // conditions referenced in ROUTING_CONFIG
@@ -366,6 +371,17 @@ export const ROUTING_CONFIG = {
         {
           main: 7,
           subject: [0, 1],
+          conditions: {}
+        }
+      ]
+    },
+  "Erich Lamontagne":
+    {
+      email: "erichlamontagne@HurstSonLLC.com",
+      rules: [
+        {
+          main: 9,
+          subject: [0],
           conditions: {}
         }
       ]
