@@ -129,7 +129,11 @@ export async function getConversationMessagesAsync(conversationId) {
       'isRead',
       'conversationIndex',
       'id',
-      'internetMessageHeaders'
+      'internetMessageHeaders',
+      
+      'bccRecipients',
+      'replyTo',
+      'sender'
     ])
     .get();
     // graph doesnot allow filtering and orderby at the same time.
@@ -159,7 +163,7 @@ export async function getInboxAsync() {
     .api('/me/mailFolders/inbox/messages')
     .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
     .header('Prefer', 'outlook.body-content-type="text"')
-    .top(1)
+    .top(2)
     .orderby('receivedDateTime DESC')
     .get();
 }
@@ -197,7 +201,7 @@ export async function getUniqueMessages() {
     );
 
     const fullBody = sorted.map(msg => {
-      const text = extractBodyTextWithCheerio(msg.body?.content ?? '').join(" ");
+      const text = extractBodyTextWithCheerio(msg.uniqueBody?.content ?? '').join(" ");
       return `[${msg.receivedDateTime} - ${msg.from?.emailAddress?.address}]:\n${text}`;
     }).join('\n\n---\n\n');
 
@@ -216,7 +220,18 @@ export async function getUniqueMessages() {
       synopsis: null,
       body: fullBody,
       in_reply_to: replyInfo.inReplyTo ?? null,
-    });
+      
+      all_parties: new Set(
+        sorted.flatMap(msg => [
+          msg.sender?.emailAddress?.address,
+          msg.from?.emailAddress?.address,
+          ...(msg.toRecipients ?? []).map(r => r.emailAddress?.address),
+          ...(msg.ccRecipients ?? []).map(r => r.emailAddress?.address),
+          ...(msg.bccRecipients ?? []).map(r => r.emailAddress?.address),
+          ...(msg.replyTo ?? []).map(r => r.emailAddress?.address),
+        ].filter(Boolean))
+      )
+    });// rhw  all_parties component stores everybody that is involved. (for checking forwarding)
   }
   return output;
 }
@@ -230,6 +245,7 @@ export async function uploadToDB() {
   const output = await getUniqueMessages()
 
   console.log(`Total emails: ${output.length}`);
+  
   
   
 

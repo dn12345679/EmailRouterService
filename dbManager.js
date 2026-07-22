@@ -81,19 +81,19 @@ Email Message to classify:\n ${MESSAGE}
 Instructions:
 1. Compute a probability for every top-level subject and bottom-level subcategory, and return the main subject and the most likely subcategory under "subject.main" and "subject.sub". Pay attention to the order that
 the emails in the chain are in, as noted by the date and time of received. The messages in the thread may not have been ordered in sequential time.
-3. Evaluate every condition independently. It is not required to figure out if the region is North Dakota or eastGroup or westGroup, but fill if possible. Return true if the likelihood is at least 0.5; otherwise return false. The conditions are here: ${CONDITIONS}
-4. If relevant to the message and not a brief mention, return also:
+2. Evaluate every condition independently. It is not required to figure out if the region is North Dakota or eastGroup or westGroup, but fill if possible. Return true if the likelihood is at least 0.5; otherwise return false. The conditions are here: ${CONDITIONS}
+3. If relevant to the message and not a brief mention, return also:
    - Property Location. If there are multiple locations, list them in an array format like this: [Bakerview, Appaloosa]
    - Property Code enclosed in array format regardless of count []. If there are multiple 2 Letter Property Codes, List them in an array format like this: [BV, AP]
    - Lot Number enclosed in array format regardless of count []. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
-5. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
-6. Under the "completed" field in "important", update the value to be 'true' only if the email thread signifies that the subject as a whole is resolved or the email does not mention that further action is necessary, unless if there is a further query indicating the problem was not successfully resolved. Be careful with wording that may indicate that an unrelated task was resolved instead.
-7. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
-8. Under "synopsis" field in "important", create a string of around 6 words that fits as a title of the email in the form: 
+4. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
+5. Under the "completed" field in "important", Set completed = true if the thread reaches a clear resolution  (e.g. "looks good", "thanks for completing this", or similar  closing acknowledgment) AND no message after that point raises  a new problem or requests further action. Otherwise, completed = false.
+6. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
+7. Under "synopsis" field in "important", create a string of around 6 words that fits as a title of the email in the form: 
  Property Code + Lot Number + Subjects + Adjective/Description. 
  If there are multiple property codes or lot numbers, List them like this: "BV 99, AD 23, ..."
  If there is no valid property code, lot number, then just write "ANY" + Subjects + Description.
-9. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
+8. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
 
 ${TEMPLATE}
 
@@ -174,15 +174,13 @@ async function check_region_by_code(codes) {
   return return_json;
 }
 
-// given an input conversation id, representing the conversation of a forwarded or CC'd or direct email from graphHelper.getConversationMessagesAsync(id),
-// calls Claude to classify and update the database if the database has missing data that it can fill in.
-export async function classify_email_by_ID(id) {
+
+export async function classify_email_body(body) {
   try{
-    const conversation = await getConversationMessagesAsync(id)
-    const body_content = conversation.value[0].body?.content
+    const body_content = body
     const cheeriod = extractBodyTextWithCheerio(body_content ?? ' ').join(" ")
     const str = PROMPT(JSON.stringify(SUBJECT_BUCKETS), cheeriod, JSON.stringify(CONDITION_BUCKETS), EXAMPLE)
-  
+    
     const initial_JSON = await LLM_classification(str)
     const clean = initial_JSON.replace(/```json|```/g, "").trim();
     const obj = JSON.parse(clean);
@@ -194,6 +192,23 @@ export async function classify_email_by_ID(id) {
     obj.conditions.westGroup = property_code_classification.West
     
     return obj; // should be good from here. 
+  }
+  catch(error){
+    console.log(error)
+  }
+  
+}
+
+
+// given an input conversation id, representing the conversation of a forwarded or CC'd or direct email from graphHelper.getConversationMessagesAsync(id),
+// calls Claude to classify and update the database if the database has missing data that it can fill in. 
+export async function classify_email_by_ID(id) {
+  try{
+    const conversation = await getConversationMessagesAsync(id)
+    const body_content = conversation.value[0].body?.content
+
+    
+    return classify_email_body(body_content); // should be good from here. 
   }
   catch(error){
     console.log(error)
@@ -388,9 +403,22 @@ async function upsertPropertyPairs(client, conversationId, codes, lots) {
   }
 }
 
+// checks if for a given email thread conversationId, and a party of interest party, checks if they already exist
+export async function party_included_DB(conversationId, party){
+  const result = await client.query(
+    `SELECT EXISTS(SELECT 1 FROM recipients WHERE conversation_id = $1 AND intended_recipient = $2)`,
+    [conversationId, party]
+  );
+  return result.rows[0].exists;
+}
+// same thing but if there is a list given
+export async function party_included_list(list, party) {
+  return party in list;
+}
 
 
 // INITIAL INSERT ONLY, INTENTS occur after
+// this is directly called from graphHelper.uploadToDB() and uses the output from graphHelper.getUniqueMessages()
 export async function insertIntoDB(emails) {
   const client = await pool.connect();
   try {
@@ -403,8 +431,12 @@ export async function insertIntoDB(emails) {
     for (const email of emails) {
       if (!updated_conversation_ids.has(email.conversationId)) continue;
 
-      const classification = await classify_email_by_ID(email.conversationId);
+      //const classification = await classify_email_by_ID(email.conversationId);
+      const classification = await classify_email_body(email.body)
+      //console.log(classification);
+      console.log(email.body)
       const recipients = await classification_to_email(classification);
+
 
       const similar = await find_similar_synopsis(
         classification.important.synopsis,
@@ -451,6 +483,9 @@ export async function insertIntoDB(emails) {
         email.forwarded ?? null, email.updated, email.sender, email.subject,
         email.body, email.in_reply_to || null, classification.important.synopsis,
       ]);
+      
+      // add all related parties
+        
 
       await upsertPropertyPairs(
         client,
