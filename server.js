@@ -17,7 +17,8 @@ import {
   classify_email_by_ID,
   classification_to_email,
   checkReminders,
-  getReadEmailsWithIntents
+  getReadEmailsWithIntents,
+  email_needs_reminder
  } from './dbManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -133,7 +134,8 @@ app.post('/api/classify-selected', requireAuth, async (req, res) => {
   }
   try {
     const result = await insertIntoDB(messages);
-    res.json(result);
+    const reminderDueIds = await email_needs_reminder()
+    res.json({result, reminderDueIds  });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

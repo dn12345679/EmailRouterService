@@ -163,7 +163,7 @@ export async function getInboxAsync() {
     .api('/me/mailFolders/inbox/messages')
     .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
     .header('Prefer', 'outlook.body-content-type="text"')
-    .top(2)
+    .top(10)
     .orderby('receivedDateTime DESC')
     .get();
 }
@@ -221,7 +221,7 @@ export async function getUniqueMessages() {
       body: fullBody,
       in_reply_to: replyInfo.inReplyTo ?? null,
       
-      all_parties: new Set(
+      all_parties: Array.from(new Set(
         sorted.flatMap(msg => [
           msg.sender?.emailAddress?.address,
           msg.from?.emailAddress?.address,
@@ -229,8 +229,10 @@ export async function getUniqueMessages() {
           ...(msg.ccRecipients ?? []).map(r => r.emailAddress?.address),
           ...(msg.bccRecipients ?? []).map(r => r.emailAddress?.address),
           ...(msg.replyTo ?? []).map(r => r.emailAddress?.address),
-        ].filter(Boolean))
-      )
+        ].filter(Boolean).map(a => a.toLowerCase()))
+      )),
+
+      internal: false, // whether is from internal domain or not
     });// rhw  all_parties component stores everybody that is involved. (for checking forwarding)
   }
   return output;

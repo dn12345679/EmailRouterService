@@ -164,16 +164,15 @@ async function runJob(job, btn) {
         method: 'POST',
         body: JSON.stringify({ messages }),
       });
-      classified = result;
+      classified = result.result;
       console.log(classified)
       out = outputEl('inbox'); // want to bundle all stuff into 1 UI for consistency
       renderClassifiedList(out, {messages, classified}); 
     }
     else if (job === 'group-selected') {
       const result = await fetchJSON('/api/group-selected', { method: 'POST' });
-      //out = outputEl('inbox')
-      intents = result;
-      renderIntentsList(out, {messages, classified, intents}); 
+      intents = result.intents;
+      renderIntentsList(out, { messages: result.messages, intents });
     }
     else if (job === 'classify-all') {
       const result = await fetchJSON('/api/classify-all', { method: 'POST' });
@@ -218,40 +217,25 @@ function renderClassifiedList(out, items) {
   out.classList.remove('err');
   const { messages, classified } = items;
 
-  if (!messages || !messages.length) {
-    out.textContent = 'Inbox is empty.';
+  if (!classified || !classified.length) {
+    out.textContent = 'Nothing needed reclassification.';
     return;
   }
 
-  const classifiedById = new Map(
-    (classified || []).map(item => [item.conversationId, item])
-  );
-
-  const rows = messages.map((m) => {
-    const match = classifiedById.get(m.conversationId);
-    const c = match?.classification;
-    const recipientNames = (match?.recipients || []).map(r => escapeHTML(r[0])).join(', ') || '—';
-
+  const rows = messages.map(({ classification: c, recipients, similar }) => {
+    const recipientNames = (recipients || []).map(r => escapeHTML(r[0])).join(', ') || '—';
     return `
       <tr>
-        <td>${escapeHTML(m.subject || '(no subject)')}</td>
-        <td>${escapeHTML(m.sender || '—')}</td>
-        <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
-        <td>${escapeHTML(c?.important?.synopsis || (match ? '—' : 'not reprocessed'))}</td>
+        <td>${escapeHTML(c?.important?.synopsis || '—')}</td>
         <td>${escapeHTML(c?.subject?.main || '—')} / ${escapeHTML(c?.subject?.sub || '—')}</td>
         <td>${recipientNames}</td>
-        <td>${c?.important?.completed ? 'yes' : c ? 'no' : '—'}</td>
-        <td>${match?.similar ? 'possible duplicate' : ''}</td>
+        <td>${c?.important?.completed ? 'yes' : 'no'}</td>
+        <td>${similar ? 'possible duplicate' : ''}</td>
       </tr>`;
   }).join('');
 
   out.innerHTML = `<table>
-    <thead>
-      <tr>
-        <th>Subject</th><th>From</th><th>Updated</th>
-        <th>Synopsis</th><th>Subject bucket</th><th>Routed to</th><th>Completed</th><th>Flags</th>
-      </tr>
-    </thead>
+    <thead><tr><th>Synopsis</th><th>Subject bucket</th><th>Routed to</th><th>Completed</th><th>Flags</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -293,17 +277,14 @@ function renderClassification(out, result) {
 
 
 function renderIntentsList(out, items) {
-
-
-  
   out.classList.remove('err');
-  const { messages, classified, intents } = items;
+  const { messages, intents } = items;
 
   if (!messages || !messages.length) {
-    out.textContent = 'Inbox is empty.';
+    out.textContent = 'Nothing needs review right now.';
     return;
   }
-  console.log(classified)
+
   const rows = messages.map((m) => {
     const intent = intents[m.conversation_id] || '—';
     const intentColor = {
