@@ -222,20 +222,32 @@ function renderClassifiedList(out, items) {
     return;
   }
 
-  const rows = messages.map(({ classification: c, recipients, similar }) => {
+  const messageById = new Map((messages || []).map(m => [m.conversationId, m]));
+
+  // im reversing the order because otherwise it would be earliest first latest last which is bad
+  const rows = [...classified].reverse().map(({ conversationId, classification: c, recipients, similar }) => {
+    const m = messageById.get(conversationId) || {};
     const recipientNames = (recipients || []).map(r => escapeHTML(r[0])).join(', ') || '—';
     return `
       <tr>
+        <td>${escapeHTML(m.subject || '(no subject)')}</td>
+        <td>${escapeHTML(m.sender || '—')}</td>
+        <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
         <td>${escapeHTML(c?.important?.synopsis || '—')}</td>
         <td>${escapeHTML(c?.subject?.main || '—')} / ${escapeHTML(c?.subject?.sub || '—')}</td>
         <td>${recipientNames}</td>
-        <td>${c?.important?.completed ? 'yes' : 'no'}</td>
+        <td>${c?.important?.completed ? 'yes' : c ? 'no' : '—'}</td>
         <td>${similar ? 'possible duplicate' : ''}</td>
       </tr>`;
   }).join('');
 
   out.innerHTML = `<table>
-    <thead><tr><th>Synopsis</th><th>Subject bucket</th><th>Routed to</th><th>Completed</th><th>Flags</th></tr></thead>
+    <thead>
+      <tr>
+        <th>Subject</th><th>From</th><th>Updated</th>
+        <th>Synopsis</th><th>Subject bucket</th><th>Routed to</th><th>Completed</th><th>Flags</th>
+      </tr>
+    </thead>
     <tbody>${rows}</tbody>
   </table>`;
 }

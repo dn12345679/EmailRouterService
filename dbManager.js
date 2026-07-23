@@ -115,7 +115,7 @@ const NO_LOT = 'unspecified';
 // testing for now. Returns a classification of the email based on a prompt
 async function LLM_classification(prompt) {
   const message = await client.messages.create({
-    model: "claude-sonnet-4-5",
+    model: "claude-haiku-4-5",
     max_tokens: 1024,
     cache_control: { type: "ephemeral" },
     messages: [
