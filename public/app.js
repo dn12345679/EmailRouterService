@@ -167,11 +167,13 @@ async function runJob(job, btn) {
       classified = result.result;
       console.log(classified)
       out = outputEl('inbox'); // want to bundle all stuff into 1 UI for consistency
+      
       renderClassifiedList(out, {messages, classified}); 
     }
     else if (job === 'group-selected') {
       const result = await fetchJSON('/api/group-selected', { method: 'POST' });
       intents = result.intents;
+      out = outputEl('inbox')
       renderIntentsList(out, { messages: result.messages, intents });
     }
     else if (job === 'classify-all') {
@@ -186,6 +188,10 @@ async function runJob(job, btn) {
 }
 
 // Render helpers
+
+function statusEl(job) {
+  return document.querySelector(`[type="${job}"]`)
+}
 
 function outputEl(job) {
   return document.querySelector(`[data-output="${job}"]`);
@@ -303,7 +309,7 @@ function renderIntentsList(out, items) {
       'forward': 'lightblue',
       'duplicate': 'orange',
       'complete': 'green',
-      'reminder': 'yellow',
+      'reminder': 'purple',
       'supervisor': 'red'
     }[intent] || 'gray';
     
@@ -314,7 +320,7 @@ function renderIntentsList(out, items) {
         <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
         <td>${escapeHTML(m.synopsis || '—')}</td>
         <td style="background-color: ${intentColor}; color: white; font-weight: bold;">
-          ${escapeHTML(intent)}
+          ${escapeHTML(intent)} 
         </td>
       </tr>`;
   }).join('');

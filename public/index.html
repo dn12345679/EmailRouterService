@@ -108,8 +108,8 @@
       <button class="btn btn-secondary run-btn" data-job="classify-selected">Classify Collected</button>
       <button class="btn btn-secondary run-btn" data-job="group-selected">Check All Intents</button> <!-- duplicates, send/set reminders, check thread updates, -->
       <button class="btn btn-primary run-btn" data-job="submit-selected">Submit and Save</button>
-      <div class="output" data-output="classify-selected"></div>
-      <div class="output" data-output="group-selected"></div>
+      <div class="output" data-output="classify-selected" type="status-node-classification"></div>
+      <div class="output" data-output="group-selected" type="status-node-group-selected"></div>
     </article>
 
     <!-- Job: Classify all + insert -->
@@ -123,13 +123,13 @@
       <div class="output" data-output="classify-all"></div>
     </article>
 
-    <!-- Job: Classify single email -->
-    <article class="card">
+    <!-- Job: Classify single email (probably not necessary for development) -->
+    <article class="card hidden">
       <div class="card-head">
         
         <h2>Classify email</h2>
       </div>
-      <p class="card-desc">Classifies a single thread by conversation ID, without touching the DB.</p>
+      <p class="card-desc">Classifies a single thread by conversation ID</p>
       <form id="classify-email-form" class="form">
         <label>Conversation ID
           <input type="text" name="id" required placeholder="AAQkADQzNTI4..." class="mono-input" />
