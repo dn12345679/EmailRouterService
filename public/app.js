@@ -142,6 +142,7 @@ document.getElementById('classify-email-form').addEventListener('submit', async 
   try {
     const result = await fetchJSON('/api/classify-email', { method: 'POST', body: JSON.stringify({ id }) });
     renderClassification(out, result);
+    
   } catch (err) {
     renderError(out, err.message);
   } finally {
@@ -166,6 +167,9 @@ async function runJob(job, btn) {
       });
       classified = result.result;
       console.log(classified)
+     
+      setLoading(null, out, 'Completed.'); // just sets the status of the 'running...' to complete
+
       out = outputEl('inbox'); // want to bundle all stuff into 1 UI for consistency
       
       renderClassifiedList(out, {messages, classified}); 
@@ -173,9 +177,12 @@ async function runJob(job, btn) {
     else if (job === 'group-selected') {
       const result = await fetchJSON('/api/group-selected', { method: 'POST' });
       intents = result.intents;
+      setLoading(null, out, 'Completed.');
       out = outputEl('inbox')
       renderIntentsList(out, { messages: result.messages, intents });
     }
+
+    
     else if (job === 'classify-all') {
       const result = await fetchJSON('/api/classify-all', { method: 'POST' });
       renderOk(out, `Done. Checked ${result.count} email(s).`);
@@ -292,8 +299,6 @@ function renderClassification(out, result) {
   `;
 }
 
-
-
 function renderIntentsList(out, items) {
   out.classList.remove('err');
   const { messages, intents } = items;
@@ -304,15 +309,19 @@ function renderIntentsList(out, items) {
   }
 
   const rows = messages.map((m) => {
-    const intent = intents[m.conversation_id] || '—';
+    const entry = intents[m.conversation_id];
+    const intent = entry?.intent || '—';
+    const interestedParty = entry?.interestedParty;
+
     const intentColor = {
       'forward': 'lightblue',
       'duplicate': 'orange',
       'complete': 'green',
+      'reminder_scheduled': 'teal',
       'reminder': 'purple',
       'supervisor': 'red'
     }[intent] || 'gray';
-    
+
     return `
       <tr>
         <td>${escapeHTML(m.subject || '(no subject)')}</td>
@@ -320,19 +329,31 @@ function renderIntentsList(out, items) {
         <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
         <td>${escapeHTML(m.synopsis || '—')}</td>
         <td style="background-color: ${intentColor}; color: white; font-weight: bold;">
-          ${escapeHTML(intent)} 
+          ${escapeHTML(intent)}
         </td>
+        <td>${formatInterestedParty(interestedParty)}</td>
       </tr>`;
   }).join('');
 
   out.innerHTML = `<table>
     <thead>
       <tr>
-        <th>Subject</th><th>From</th><th>Updated</th><th>Synopsis</th><th>Intent</th>
+        <th>Subject</th><th>From</th><th>Updated</th><th>Synopsis</th><th>Intent</th><th>Target</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>`;
+}
+
+function formatInterestedParty(party) {
+  if (party == null) return '—';
+  if (Array.isArray(party)) return party.map(escapeHTML).join(', ') || '—';
+  if (party instanceof Date) return party.toLocaleString();
+  // dates come back from JSON as ISO strings once they cross the fetch boundary
+  if (typeof party === 'string' && !isNaN(Date.parse(party)) && /^\d{4}-\d{2}-\d{2}T/.test(party)) {
+    return new Date(party).toLocaleString();
+  }
+  return escapeHTML(String(party));
 }
 
 

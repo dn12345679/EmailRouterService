@@ -89,39 +89,38 @@ export const CONDITION_BUCKETS = {
 
 
 // 
-export const REMINDER_CONFIG =
-  {
-    "Screening Only": 
-      {
-        repeat: true,
-        repeat_interval: [2], // 2 days per cycle, repeat until 'complete'
-
-        completeByDate: false
-      },
-    "Screening with Completed and Generated Lease":
-      {
-        repeat: true,
-        repeat_interval: [7],
-
-        completeByDate:false
-        
-      },
-    "Specific Deadline":
-      {
-        repeat: true,
-        repeat_interval: [4, 2, 1],
-
-        completeByDate: true
-      },
-    "Intent to Vacate":
-      {
-        repeat: false,
-        repeat_interval: [],
-
-        completeByDate: true
-      }
-    
+export const REMINDER_CONFIG = {
+  "Screening Only": {
+    mode: "repeat",
+    anchor: "last_response",   // reset clock when party replie to email
+    interval_days: 2,
+    stopWhen: "complete"     // task complete
+  },
+  "Screening with Completed and Generated Lease": {
+    mode: "repeat_or_anchor",
+    anchor: "last_response",
+    interval_days: 7,
+    overrideAnchorField: "target_date", 
+    stopWhen: "complete"         
+  },
+  "Specific Deadline": {
+    mode: "deadline_schedule",
+    checkInDaysAfterAssignment: 4,
+    deadlineOffsets: [2, 1, 0],    
+    fallbackIntervalDays: 1,        
+    stopWhen: "complete"
+  },
+  "Intent to Vacate": {
+    mode: "single_anchor",
+    anchorField: "target_date"    
+  },
+  "Miscellaneous": {
+    mode: "repeat",
+    anchor: "assigned",
+    interval_days: 7,
+    stopWhen: "complete"
   }
+};
 
 
 // actual people with emails configuration

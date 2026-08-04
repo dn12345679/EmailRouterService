@@ -2,7 +2,7 @@ import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
 import { load } from 'cheerio';
-import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS } from "./appsettings.js"; 
+import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG } from "./appsettings.js"; 
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
@@ -67,6 +67,8 @@ export const EXAMPLE =
     "summary": "this is a summary of the email in 100 words or less",
     "completed": false,
     "removeFromThread": [],
+    "reminderType": "Miscellaneous",
+    "forwardingNotNeeded": false,
     "scheduledReminder": "MM/DD/YYYY" or "-"
   }
 }
@@ -74,7 +76,7 @@ export const EXAMPLE =
 
 export const TEST_EMAIL = `The pipes in bakerview lot 99 are currently undergoind maintenance. Avoid using excessive water for now.`
 
-export const PROMPT = (SUBJECTS, MESSAGE, SUBJECT_LINE, CONDITIONS, TEMPLATE) =>  
+export const PROMPT = (SUBJECTS, MESSAGE, SUBJECT_LINE, CONDITIONS, TEMPLATE, REMINDERS) =>  
 `Given the email below, classify it into the predefined subject buckets provided here: ${SUBJECTS} \n
 
 Email Message to classify:\n ${MESSAGE}
@@ -91,19 +93,29 @@ the emails in the chain are in, as noted by the date and time of received. The m
 4. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
 5. Under the "completed" field in "important", Set completed = true if the thread reaches a clear resolution  (e.g. "looks good", "thanks for completing this", or similar  closing acknowledgment) AND no message after that point raises  a new problem or requests further action. Otherwise, completed = false.
 6. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
-7. Under "synopsis" field in "important", create a string of around 5-6 words that fits as a title of the email in the form: 
+7. Under "synopsis" field in "important", create a string of around 5-6 words t
+hat fits as a title of the email in the form: 
  Property Code + Lot Number + Subjects + Adjective/Description. For example "AR 42 Increase Rescission Delivered"
  If there are multiple property codes or lot numbers, List them like this: "BV 99, AD 23, ..."
  If there is no valid property code, lot number, then just write "ANY" + Subjects + Description.
-8. Under "scheduledReminder" in "important", if there is a mention of a specific deadline(s), choose the one from the most recent email, and assign that value in the MM/DD/YYYY format to this property. Otherwise leave as "-".
-9. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
+8. Under "reminderType" in "important", classify it based on the types of reminders here: ${Object.keys(REMINDERS)}. By default, everything will be "Miscellaneous".
+9. Under "scheduledReminder" in "important", if there is a mention of a specific deadline(s), choose the one from the most recent email, and assign that value in the MM/DD/YYYY format to this property. Otherwise leave as "-".
+10. Under "forwardingNotNeeded" in "important", set this to true ONLY if the email explicitly states (do not assume) that forwarding is unnecessary or that it has already been sent to the correct recipient(s) 
+   (e.g. "this does not need to be forwarded", "already sent to the right people", "no need to forward this"). 
+   Do not infer this from context or assume it based on who is included — only set true if the email says so directly. Otherwise, set false.
+11. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
 
 ${TEMPLATE}
 
 `
 
-
-
+// used to close both duplicates and finalizing threads.
+export const CLOSING_MESSAGE = (classification) => 
+  `
+    This thread has been marked as complete. Thank you for your responses.
+    Synopsis: ${classification.important.synopsis || 'N/A'}
+    Summary: ${classification.important.summary || 'N/A'}
+  ` 
 
 
 const NO_CODE = 'none';
@@ -174,7 +186,7 @@ export async function classify_email(email) {
   try{
     const body_content = email.body
     const cheeriod = extractBodyTextWithCheerio(body_content ?? ' ').join(" ")
-    const str = PROMPT(JSON.stringify(SUBJECT_BUCKETS), cheeriod,  email.subject, JSON.stringify(CONDITION_BUCKETS), EXAMPLE)
+    const str = PROMPT(JSON.stringify(SUBJECT_BUCKETS), cheeriod,  email.subject, JSON.stringify(CONDITION_BUCKETS), EXAMPLE, REMINDER_CONFIG)
     
     const initial_JSON = await LLM_classification(str)
     const clean = initial_JSON.replace(/```json|```/g, "").trim();
@@ -249,7 +261,7 @@ async function find_similar_synopsis(client, synopsis, propertyCodes, lots, subj
 
   const result = await client.query(`
     SELECT DISTINCT e.conversation_id, e.synopsis,
-           similarity(e.synopsis, $1) AS score
+          similarity(e.synopsis, $1) AS score
     FROM email e
     JOIN email_property ep ON ep.conversation_id = e.conversation_id
     JOIN UNNEST($2::text[], $3::text[]) AS t(code, lot)
@@ -257,6 +269,7 @@ async function find_similar_synopsis(client, synopsis, propertyCodes, lots, subj
     WHERE e.subject_main = $4
       AND e.subject_sub = $5
       AND e.conversation_id != $6
+      AND similarity(e.synopsis, $1) > 0.3
     ORDER BY score DESC
     LIMIT 1;
   `, [synopsis, codesArr, lotsArr, subjectMain, subjectSub, currentConversationId]);
@@ -271,46 +284,70 @@ function conditionsMatch(ruleConditions, context) {
   );
 }
 
-
 export async function getReadEmailsWithIntents() {
   try {
     const result = await pool.query(`
-      SELECT *
-      FROM email
-      WHERE status = 'read' OR duplicate_of IS NOT NULL
+      SELECT e.*, 
+             ARRAY_AGG(r.intended_recipient) FILTER (WHERE r.intended_recipient IS NOT NULL) AS intended_recipients
+      FROM email e
+      LEFT JOIN recipients r ON e.conversation_id = r.conversation_id
+      WHERE e.status = 'read' OR e.duplicate_of IS NOT NULL
+      GROUP BY e.conversation_id
     `);
+
     const messages = result.rows;
-    const forward = messages
-      .filter(m => !m.forwarded)
-      .map(m => m.conversation_id);
+    
+    console.log('[button3] messages pulled:', messages.length);
 
-    const complete = messages
-      .filter(m => m.status === 'complete' && m.duplicate_of === null)
-      .map(m => m.conversation_id);
+    const forward = messages.filter(m => !m.forwarded).map(m => [m.conversation_id, m.intended_recipients ?? []]);
+    const complete = messages.filter(m => m.status === 'complete' && m.duplicate_of === null).map(m => m.conversation_id);
+    const duplicate = messages.filter(m => m.duplicate_of !== null).map(m => [m.conversation_id, m.duplicate_of]);
 
-    const duplicate = messages
-      .filter(m => m.duplicate_of !== null)
-      .map(m => [m.conversation_id, m.duplicate_of]);
+    console.log('[button3] forward candidates:', forward.map(([id]) => id));
+    console.log('[button3] complete candidates:', complete);
+    console.log('[button3] duplicate candidates:', duplicate.map(([id]) => id));
 
-    const reminderIntents = { reminder: [], supervisor: [] };
+    const reminderIntents = { scheduled: [], reminder: [], supervisor: [] };
+    await scheduleNewReminders(messages, reminderIntents);
+    console.log('[button3] newly scheduled:', reminderIntents.scheduled);
+
     await checkReminders(messages, reminderIntents);
+    console.log('[button3] due reminders:', reminderIntents.reminder);
+    console.log('[button3] supervisor escalations:', reminderIntents.supervisor);
 
     const intentsByConversationId = new Map();
-    for (const convId of forward) intentsByConversationId.set(convId, 'forward');
-    for (const [newConvId] of duplicate) intentsByConversationId.set(newConvId, 'duplicate');
-    for (const convId of complete) intentsByConversationId.set(convId, 'complete');
-    for (const convId of reminderIntents.reminder) {
-      if (!intentsByConversationId.has(convId)) intentsByConversationId.set(convId, 'reminder');
-    }
-    for (const convId of reminderIntents.supervisor) intentsByConversationId.set(convId, 'supervisor');
 
+    for (const [convId, recipients] of forward) {
+      intentsByConversationId.set(convId, { intent: 'forward', interestedParty: recipients });
+    }
+    for (const [newConvId, originalConvId] of duplicate) {
+      const original = messages.find(m => m.conversation_id === originalConvId);
+      intentsByConversationId.set(newConvId, { intent: 'duplicate', interestedParty: original?.created ?? null });
+    }
+    for (const convId of complete) {
+      intentsByConversationId.set(convId, { intent: 'complete', interestedParty: null });
+    }
+    for (const { convId, date } of reminderIntents.scheduled) {
+      if (!intentsByConversationId.has(convId)) {
+        intentsByConversationId.set(convId, { intent: 'reminder_scheduled', interestedParty: date });
+      }
+    }
+    for (const { convId, date, nextIndex } of reminderIntents.reminder) {
+      if (!intentsByConversationId.has(convId)) {
+        intentsByConversationId.set(convId, { intent: 'reminder', interestedParty: date, nextIndex });
+      }
+    }
+    for (const convId of reminderIntents.supervisor) {
+      intentsByConversationId.set(convId, { intent: 'supervisor', interestedParty: null });
+    }
+
+    console.log('[button3] final intents:', Object.fromEntries(intentsByConversationId));
     return { messages, intents: Object.fromEntries(intentsByConversationId) };
   } catch (err) {
     console.error(err);
     throw err;
   }
 }
-
 
 
 // from settings.js config, converts the outpuyt to the email addresses (must go through classify_email_by_ID first to get the JSON object)
@@ -426,7 +463,6 @@ export async function insertIntoDB(emails) {
     let output = [];
     const updated_conversation_ids = new Set(await email_needs_classification(emails));
 
-    // sorted so that the oldest emails are processed first, but the display order remains unchanged
     const processingOrder = [...emails].sort(
       (a, b) => new Date(a.created ?? a.updated) - new Date(b.created ?? b.updated)
     );
@@ -434,14 +470,11 @@ export async function insertIntoDB(emails) {
     for (const email of processingOrder) {
       if (!updated_conversation_ids.has(email.conversationId)) continue;
 
-      //const classification = await classify_email_by_ID(email.conversationId);
-      const classification = await classify_email(email)
-      //console.log(classification);
-      const recipients = await classification_to_email(classification); // who the email needs to go to
-      
+      const classification = await classify_email(email);
+      const recipients = await classification_to_email(classification);
 
       const similar = await find_similar_synopsis(
-        client, 
+        client,
         classification.important.synopsis,
         classification.property.code,
         classification.property.lot,
@@ -450,13 +483,11 @@ export async function insertIntoDB(emails) {
         email.conversationId
       );
 
-
-      output.push({conversationId: email.conversationId,updated: email.updated, classification, recipients, similar });
-      // similarity score checking. 
+      output.push({ conversationId: email.conversationId, updated: email.updated, classification, recipients, similar });
 
       if (similar) {
         email.status = 'complete';
-        email.forwarded = true;
+        email.forwarded = true; // duplicate path: still a stored fact, not an action
 
         await client.query(`
           INSERT INTO email (
@@ -475,175 +506,196 @@ export async function insertIntoDB(emails) {
           classification.subject.main, classification.subject.sub,
           similar.conversation_id
         ]);
-        
-        // go back and update the old email 
+
         await client.query(`UPDATE email SET status = 'read' WHERE conversation_id = $1`, [similar.conversation_id]);
-
-        continue; 
+        continue;
       }
 
+      email.status = classification.important.completed ? 'complete' : 'read';
 
-
-      if (classification.important.completed) {
-        email.status = 'complete'; // manually set the new status
-      }
-      // check if everyone htat needs to be included is actually included
-      if (recipients.every(
-        ([name, email_address]) => party_included_list(email.all_parties, email_address.toLowerCase())
-      )) {
+      if (
+        classification.important.forwardingNotNeeded ||
+        recipients.every(([name, addr]) => party_included_list(email.all_parties, addr.toLowerCase()))
+      ) {
         email.forwarded = true;
       }
-      // set internal
+
       if (email_within_domain(process.env.INTERNAL_DOMAIN, email.sender)) {
-        email.internal = true
+        email.internal = true;
       }
 
-      // add all  mails
       await client.query(`
         INSERT INTO email (
           conversation_id, id, status, created, forwarded, updated,
           sender, subject, body, in_reply_to, synopsis, subject_main, subject_sub, duplicate_of
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (conversation_id) DO UPDATE SET
-          id          = EXCLUDED.id,
-          status      = EXCLUDED.status,
-          created     = EXCLUDED.created,
-          updated     = EXCLUDED.updated,
-          sender      = EXCLUDED.sender,
-          subject     = EXCLUDED.subject,
-          body        = EXCLUDED.body,
-          in_reply_to = EXCLUDED.in_reply_to,
-          forwarded   = EXCLUDED.forwarded,
-          synopsis    = EXCLUDED.synopsis,
-          subject_main = EXCLUDED.subject_main,
-          subject_sub  = EXCLUDED.subject_sub,
-          duplicate_of = EXCLUDED.duplicate_of
+          id = EXCLUDED.id, status = EXCLUDED.status, created = EXCLUDED.created,
+          updated = EXCLUDED.updated, sender = EXCLUDED.sender, subject = EXCLUDED.subject,
+          body = EXCLUDED.body, in_reply_to = EXCLUDED.in_reply_to, forwarded = EXCLUDED.forwarded,
+          synopsis = EXCLUDED.synopsis, subject_main = EXCLUDED.subject_main,
+          subject_sub = EXCLUDED.subject_sub, duplicate_of = EXCLUDED.duplicate_of
       `, [
         email.conversationId, email.id, email.status, email.created || null,
         email.forwarded ?? null, email.updated, email.sender, email.subject,
         email.body, email.in_reply_to || null, classification.important.synopsis,
-        classification.subject.main, classification.subject.sub,  null // handled before already
+        classification.subject.main, classification.subject.sub, null
       ]);
-      
-      // add all related parties
-      
-      // skip this step for duplicates
-      if (!similar){
-        await upsertPropertyPairs(
-          client,
-          email.conversationId,
-          classification.property.code,
-          classification.property.lot
-        );
 
+      if (!similar) {
+        await upsertPropertyPairs(client, email.conversationId, classification.property.code, classification.property.lot);
 
-        // add all recipients (premature until delete later)
-        // notice how people in the chain that arent intended recipients are not added, that is because they do not matter (to the content of the email)
         if (recipients.length > 0) {
-            for (const [name, recipientEmail] of recipients) { 
-              await client.query(`
-                INSERT INTO recipients (conversation_id, intended_recipient, reminder_date, reminder_count)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (conversation_id, intended_recipient) DO NOTHING
-              `, [
-                email.conversationId,   
-                recipientEmail,         
-                getReminderDateForRecipient(name, classification.subject.main, classification.subject.sub),
-                0
-              ]);
-            }
+          const scheduledReminder = classification.important.scheduledReminder;
+          const targetDate = scheduledReminder && scheduledReminder !== "-" ? new Date(scheduledReminder) : null;
+          const reminderType = classification.important.reminderType ?? "Miscellaneous";
+
+        let sentDate = new Date(email.created ?? email.updated ?? new Date());
+          if (isNaN(sentDate.getTime())) sentDate = new Date();
+
+          for (const [name, recipientEmail] of recipients) {
+            await client.query(`
+              INSERT INTO recipients (
+                conversation_id, intended_recipient, reminder_date, reminder_count,
+                reminder_type, target_date, assigned_date, interval_index
+              )
+              VALUES ($1, $2, NULL, 0, $3, $4, $5, 0)
+              ON CONFLICT (conversation_id, intended_recipient) DO NOTHING
+            `, [email.conversationId, recipientEmail, reminderType, targetDate, sentDate]);
           }
+        }
       }
-        
     }
-    
+
     await client.query('COMMIT');
     console.log(`Processed ${emails.length} emails`);
-    output.sort(
-      (a, b) => new Date(b.classification?.updated ?? 0) - new Date(a.classification?.updated ?? 0)
-    );
-    return output; // 
+    output.sort((a, b) => new Date(b.classification?.updated ?? 0) - new Date(a.classification?.updated ?? 0));
 
-
-
+    console.log(output)
+    return output;
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(`Error: ${err.message}`);
-    throw err; // err 500
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// 86.4m is the number of milliseconds in a day
+function day2ms(days){
+  return days * 86400000
+}
+
+// DEFAULt 7
+function getReminderDateForRecipient(reminderType, targetDate, recipientRow) {
+  const config = REMINDER_CONFIG[reminderType] ?? REMINDER_CONFIG["Miscellaneous"];
+  const now = new Date();
+  const addDays = (date, n) => new Date(date.getTime() + day2ms(n));
+
+  switch (config.mode) {
+    case "repeat": {
+      const anchor = config.anchor === "last_response"
+        ? (recipientRow.last_response_date ?? recipientRow.assigned_date ?? now)
+        : (recipientRow.assigned_date ?? now);
+      return addDays(anchor, config.interval_days);
+    }
+    case "repeat_or_anchor": {
+      if (targetDate) return targetDate;
+      const anchor = recipientRow.last_response_date ?? recipientRow.assigned_date ?? now;
+      return addDays(anchor, config.interval_days);
+    }
+    case "deadline_schedule": {
+      if (!targetDate) {
+        return addDays(recipientRow.assigned_date ?? now, config.checkInDaysAfterAssignment);
+      }
+      const idx = recipientRow.interval_index ?? 0;
+      if (idx === 0) return addDays(recipientRow.assigned_date ?? now, config.checkInDaysAfterAssignment);
+      const offset = config.deadlineOffsets[idx - 1];
+      if (offset !== undefined) return addDays(targetDate, -offset);
+      return addDays(now, config.fallbackIntervalDays);
+    }
+    case "single_anchor":
+      return targetDate ?? addDays(now, 7);
+  }
+}
+
+
+
+
+
+
+// this function is read only, and is commited with every other intent
+async function scheduleNewReminders(emails, intents) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT DISTINCT ON (conversation_id)
+        conversation_id, reminder_type, target_date, assigned_date, last_response_date, interval_index
+      FROM recipients
+      WHERE reminder_date IS NULL
+      ORDER BY conversation_id
+    `);
+    const byConv = new Map(result.rows.map(r => [r.conversation_id, r]));
+
+    for (const email of emails) {
+      const convId = email.conversation_id ?? email.conversationId;
+      const row = byConv.get(convId);
+      if (!row) continue;
+
+      const nextDate = getReminderDateForRecipient(row.reminder_type, row.target_date, row);
+
+      intents.scheduled.push({ convId, date: nextDate, interval_index: row.interval_index });
+    }
   } finally {
     client.release();
   }
 }
 
 
-// DEFAULT for now, until i fugre out reminder stuff
-function getReminderDateForRecipient(name, mainSubject, subSubject) {
-  const now = new Date();
-  now.setDate(now.getDate() + 1);
-  return now;
-}
-
+// read-only and commits with every other intent
 export async function checkReminders(emails, intents) {
   const client = await pool.connect();
   try {
     const result = await client.query(`
-      SELECT conversation_id, intended_recipient, reminder_count
+      SELECT DISTINCT ON (conversation_id)
+        conversation_id, reminder_count, reminder_type, target_date,
+        assigned_date, last_response_date, interval_index
       FROM recipients
-      WHERE reminder_date IS NOT NULL
-        AND reminder_date < NOW()
+      WHERE reminder_date IS NOT NULL AND reminder_date < NOW()
+      ORDER BY conversation_id
     `);
+    const byConv = new Map(result.rows.map(r => [r.conversation_id, r]));
 
-    //  {conversationId: [{recipient, count}, ]}
-    const remindersMap = new Map();
-    for (const row of result.rows) {
-      if (!remindersMap.has(row.conversation_id)) {
-        remindersMap.set(row.conversation_id, []);
-      }
-      remindersMap.get(row.conversation_id).push({
-        recipient: row.intended_recipient,
-        count: row.reminder_count
-      });
-    }
-
-    // then loop over all emails and check for reminders
     for (const email of emails) {
-      // getReadEmailsWithIntents passes db rows (conversation_id), other callers may pass conversationId
       const convId = email.conversation_id ?? email.conversationId;
-      const recipientsWithReminders = remindersMap.get(convId);
+      const row = byConv.get(convId);
+      if (!row) continue;
 
-      if (recipientsWithReminders) {
-        // check if at least 1 recipient still has reminder_count < 8
-        const hasActivReminders = recipientsWithReminders.some(r => r.count < 8);
+      const config = REMINDER_CONFIG[row.reminder_type] ?? REMINDER_CONFIG["Miscellaneous"];
+      const now = new Date();
+      const pastTargetDate = config.completeByDate && row.target_date && now > new Date(row.target_date);
 
-        if (hasActivReminders) {
-          intents.reminder.push(convId);
 
-          for (const { recipient, count } of recipientsWithReminders) {
-            if (count < 8) {
-              await client.query(`
-                UPDATE recipients
-                SET reminder_count = reminder_count + 1
-                WHERE conversation_id = $1
-                  AND intended_recipient = $2
-              `, [convId, recipient]);
-            }
-          }
-        } else {
-          intents.supervisor.push(convId);
+      // instead of continuing reminders if past due date, escalate to supervisor. 
+      if (pastTargetDate) {
+        
+        intents.supervisor.push(convId);
+        continue;
+      }
 
-          await client.query(`
-            UPDATE recipients
-            SET reminder_date = NULL
-            WHERE conversation_id = $1
-          `, [convId]);
-        }
+      if (row.reminder_count < 8) {
+        const nextIndex = row.interval_index + 1;
+        const nextDate = getReminderDateForRecipient(row.reminder_type, row.target_date, { ...row, interval_index: nextIndex });
+        intents.reminder.push({ convId, date: nextDate, nextIndex });
+      } else {
+        intents.supervisor.push(convId);
       }
     }
   } finally {
     client.release();
   }
 }
-
 
 
 async function fetch_read() {
