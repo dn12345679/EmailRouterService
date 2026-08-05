@@ -98,7 +98,7 @@
     </article>
 
 
-    <!-- JOB: Modular buttons-->
+    <!--  -->
     <article class="card">
       <div class="card-head">
         <h2>Jobs</h2>
@@ -108,22 +108,14 @@
       <button class="btn btn-secondary run-btn" data-job="classify-selected">Classify Collected</button>
       <button class="btn btn-secondary run-btn" data-job="group-selected">Check All Intents</button> <!-- duplicates, send/set reminders, check thread updates, -->
       <button class="btn btn-primary run-btn" data-job="submit-selected">Submit and Save</button>
+      <p class="card-desc" id="submit-hint">Tick the emails in the intents table above, then Submit to preview the actions before anything is sent.</p>
       <div class="output" data-output="classify-selected" type="status-node-classification"></div>
       <div class="output" data-output="group-selected" type="status-node-group-selected"></div>
+      <div class="output" data-output="submit-selected" type="status-node-submit-selected"></div>
     </article>
 
-    <!-- Job: Classify all + insert -->
-    <article class="card hidden">
-      <div class="card-head">
-        
-        <h2>Classify all &amp; insert into DB</h2>
-      </div>
-      <p class="card-desc">Runs the full batch job: pulls threads that need processing, classifies them, and upserts into Postgres.</p>
-      <button class="btn btn-primary run-btn" data-job="classify-all">Run batch job</button>
-      <div class="output" data-output="classify-all"></div>
-    </article>
 
-    <!-- Job: Classify single email (probably not necessary for development) -->
+    <!-- Job: Classify single email (probably not necessary for development) reminder to remove this later  -->
     <article class="card hidden">
       <div class="card-head">
         

@@ -151,6 +151,28 @@ document.getElementById('classify-email-form').addEventListener('submit', async 
 });
 
 async function runJob(job, btn) {
+  if (job === 'submit-selected') {
+    const out = outputEl('submit-selected');
+    const ids = getSelectedConvIds();
+    if (!ids.length) {
+      renderError(out, 'Tick at least one email in the intents table (run "Check All Intents" first).');
+      return;
+    }
+    setLoading(btn, out, 'Building preview…');
+    try {
+      const plan = await fetchJSON('/api/execute-plan', {
+        method: 'POST',
+        body: JSON.stringify({ conversationIds: ids }),
+      });
+      renderExecutionReport(out, plan, ids);
+    } catch (err) {
+      renderError(out, err.message);
+    } finally {
+      resetLoading(btn, 'Submit and Save');
+    }
+    return;
+  }
+
   let out = outputEl(job);
   setLoading(btn, out, 'Running…');
 
@@ -312,6 +334,7 @@ function renderIntentsList(out, items) {
     const entry = intents[m.conversation_id];
     const intent = entry?.intent || '—';
     const interestedParty = entry?.interestedParty;
+    const hasIntent = !!entry;
 
     const intentColor = {
       'forward': 'lightblue',
@@ -322,8 +345,14 @@ function renderIntentsList(out, items) {
       'supervisor': 'red'
     }[intent] || 'gray';
 
+    // only actionable rows get check box
+    const checkbox = hasIntent
+      ? `<input type="checkbox" class="intent-select" data-convid="${escapeHTML(m.conversation_id)}" checked />`
+      : '';
+
     return `
       <tr>
+        <td>${checkbox}</td>
         <td>${escapeHTML(m.subject || '(no subject)')}</td>
         <td>${escapeHTML(m.sender || '—')}</td>
         <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
@@ -338,11 +367,86 @@ function renderIntentsList(out, items) {
   out.innerHTML = `<table>
     <thead>
       <tr>
+        <th><input type="checkbox" id="intent-select-all" checked title="Select all" /></th>
         <th>Subject</th><th>From</th><th>Updated</th><th>Synopsis</th><th>Intent</th><th>Target</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>`;
+
+  wireIntentSelection(out);
+}
+
+// "select all" toggle wiring
+function wireIntentSelection(out) {
+  const all = out.querySelector('#intent-select-all');
+  if (!all) return;
+  all.addEventListener('change', () => {
+    out.querySelectorAll('.intent-select').forEach((cb) => { cb.checked = all.checked; });
+  });
+}
+
+function getSelectedConvIds() {
+  return Array.from(document.querySelectorAll('.intent-select:checked')).map((cb) => cb.dataset.convid);
+}
+
+
+// actual execution
+function renderExecutionReport(out, report, confirmIds) {
+  out.classList.remove('err');
+  const results = report?.results || [];
+
+  if (!results.length) {
+    out.textContent = 'Nothing to do.';
+    return;
+  }
+
+  const statusBadge = (s) => {
+    const color = {
+      planned: '#5a7fff', done: 'green', error: 'red', skipped: 'gray',
+    }[s] || 'gray';
+    return `<span style="background:${color};color:#fff;font-weight:600;padding:1px 6px;border-radius:3px;">${escapeHTML(s)}</span>`;
+  };
+
+  const blocks = results.map((r) => {
+    const actionItems = (r.actions || []).map((a) => `
+      <li>${statusBadge(a.status)} ${escapeHTML(a.label)}${a.error ? ` <span style="color:red;">— ${escapeHTML(a.error)}</span>` : ''}</li>
+    `).join('');
+
+    return `
+      <div class="exec-block" style="border:1px solid #333;border-radius:4px;padding:8px;margin:8px 0;">
+        <div><strong>${escapeHTML(r.subject || '(no subject)')}</strong> ${statusBadge(r.status)}</div>
+        <div style="font-size:0.9em;opacity:0.8;">intent: ${escapeHTML(r.intent)} · ${escapeHTML(r.synopsis || '')}</div>
+        <ul style="margin:6px 0 0 0;padding-left:18px;">${actionItems}</ul>
+      </div>`;
+  }).join('');
+
+  const header = report.dryRun
+    ? `<div class="ok-line">Review the ${results.length} threads below, then confirm.</div>`
+    : `<div class="ok-line">Executed ${results.length} threads</div>`;
+
+  const confirmBtn = report.dryRun
+    ? `<button id="confirm-exec-btn" class="btn btn-primary" style="margin-top:8px;">Confirm &amp; Execute</button>`
+    : '';
+
+  out.innerHTML = header + blocks + confirmBtn;
+
+  if (report.dryRun) {
+    const btn = out.querySelector('#confirm-exec-btn');
+    btn?.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Executing…';
+      try {
+        const live = await fetchJSON('/api/execute', {
+          method: 'POST',
+          body: JSON.stringify({ conversationIds: confirmIds }),
+        });
+        renderExecutionReport(out, live, null);
+      } catch (err) {
+        renderError(out, err.message);
+      }
+    });
+  }
 }
 
 function formatInterestedParty(party) {

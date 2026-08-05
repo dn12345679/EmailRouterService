@@ -1,0 +1,502 @@
+[
+  {
+    "Community": "Abiel Community LLC",
+    "Community Code": "AB",
+    "Region": "East"
+  },
+  {
+    "Community": "Appaloosa Community LLC",
+    "Community Code": "AL",
+    "Region": "East"
+  },
+  {
+    "Community": "Appleway Estates LLC",
+    "Community Code": "AP",
+    "Region": "East"
+  },
+  {
+    "Community": "Aero Community LLC",
+    "Community Code": "AR",
+    "Region": "West"
+  },
+  {
+    "Community": "Bluebird Community LLC",
+    "Community Code": "BB",
+    "Region": "East"
+  },
+  {
+    "Community": "Badger Lake Estates LLC",
+    "Community Code": "BL",
+    "Region": "East"
+  },
+  {
+    "Community": "Buhl Estates LLC",
+    "Community Code": "BU",
+    "Region": "East"
+  },
+  {
+    "Community": "Bakerview Estates LLC",
+    "Community Code": "BV",
+    "Region": "West"
+  },
+  {
+    "Community": "Cranberry Community LLC",
+    "Community Code": "CB",
+    "Region": "West"
+  },
+  {
+    "Community": "Carriage Club Community LLC",
+    "Community Code": "CC",
+    "Region": "West"
+  },
+  {
+    "Community": "Cedrona Community LLC",
+    "Community Code": "CD",
+    "Region": "West"
+  },
+  {
+    "Community": "Chinook Mobile Community LLC",
+    "Community Code": "CK",
+    "Region": "East"
+  },
+  {
+    "Community": "Cedar Lane Mobile Estates LLC",
+    "Community Code": "CL",
+    "Region": "West"
+  },
+  {
+    "Community": "Country Meadows Community LLC",
+    "Community Code": "CM",
+    "Region": "East"
+  },
+  {
+    "Community": "Connell Park Estates LLC",
+    "Community Code": "CP",
+    "Region": "East"
+  },
+  {
+    "Community": "Castle Rock Community LLC",
+    "Community Code": "CR",
+    "Region": "West"
+  },
+  {
+    "Community": "Creekside Community LLC",
+    "Community Code": "CS",
+    "Region": "West"
+  },
+  {
+    "Community": "Cottonwood Community LLC",
+    "Community Code": "CW",
+    "Region": "West"
+  },
+  {
+    "Community": "Devils Lake Community LLC",
+    "Community Code": "DL",
+    "Region": "North"
+  },
+  {
+    "Community": "Easy Acres Community LLC",
+    "Community Code": "EA",
+    "Region": "East"
+  },
+  {
+    "Community": "Eastgate Community LLC",
+    "Community Code": "EG",
+    "Region": "East"
+  },
+  {
+    "Community": "Eloika Pines LLC",
+    "Community Code": "EL",
+    "Region": "East"
+  },
+  {
+    "Community": "East Ridge Acres Community LLC",
+    "Community Code": "ER",
+    "Region": "North"
+  },
+  {
+    "Community": "Evergreen Community LLC",
+    "Community Code": "EV",
+    "Region": "East"
+  },
+  {
+    "Community": "Fairchild Community LLC",
+    "Community Code": "FC",
+    "Region": "East"
+  },
+  {
+    "Community": "Fairview Community LLC",
+    "Community Code": "FV",
+    "Region": "East"
+  },
+  {
+    "Community": "Grandview Terrace LLC",
+    "Community Code": "GD",
+    "Region": "East"
+  },
+  {
+    "Community": "Grafton Community LLC",
+    "Community Code": "GF",
+    "Region": "North"
+  },
+  {
+    "Community": "Golden Ridge Village LLC",
+    "Community Code": "GR",
+    "Region": "West"
+  },
+  {
+    "Community": "Hideaway Community LLC",
+    "Community Code": "HA",
+    "Region": "East"
+  },
+  {
+    "Community": "Holcomb Hills Community LLC",
+    "Community Code": "HH",
+    "Region": "West"
+  },
+  {
+    "Community": "Holiday Village Community LLC",
+    "Community Code": "HL",
+    "Region": "North"
+  },
+  {
+    "Community": "Hamblin Heights Community LLC",
+    "Community Code": "HM",
+    "Region": "East"
+  },
+  {
+    "Community": "Horseshoe Lake Community LLC",
+    "Community Code": "HO",
+    "Region": "West"
+  },
+  {
+    "Community": "Hurst & Son LLC",
+    "Community Code": "HS",
+    "Region": "West"
+  },
+  {
+    "Community": "Hurst & Son LLC",
+    "Community Code": "HS",
+    "Region": "West"
+  },
+  {
+    "Community": "Hillview Mobile Community, LLC",
+    "Community Code": "HV",
+    "Region": "West"
+  },
+  {
+    "Community": "Illahee Shores Community LLC",
+    "Community Code": "IL",
+    "Region": "West"
+  },
+  {
+    "Community": "Idle Wheels LLC",
+    "Community Code": "IW",
+    "Region": "West"
+  },
+  {
+    "Community": "Jefferson Community LLC",
+    "Community Code": "JF",
+    "Region": "North"
+  },
+  {
+    "Community": "Klinks Resort 17 LLC",
+    "Community Code": "KL",
+    "Region": "East"
+  },
+  {
+    "Community": "Klinks Resort LLC",
+    "Community Code": "KR",
+    "Region": "East"
+  },
+  {
+    "Community": "Laurel Lane MHC, LLC",
+    "Community Code": "LL",
+    "Region": "West"
+  },
+  {
+    "Community": "Leisure Manor Estates LLC",
+    "Community Code": "LM",
+    "Region": "West"
+  },
+  {
+    "Community": "Larimore Community LLC",
+    "Community Code": "LR",
+    "Region": "North"
+  },
+  {
+    "Community": "Lakeview Terrace Community LLC",
+    "Community Code": "LT",
+    "Region": "West"
+  },
+  {
+    "Community": "Lazy Acres Community LLC",
+    "Community Code": "LZ",
+    "Region": "East"
+  },
+  {
+    "Community": "Maple Lane Estates LLC",
+    "Community Code": "MA",
+    "Region": "West"
+  },
+  {
+    "Community": "Meadowcrest Community LLC",
+    "Community Code": "MC",
+    "Region": "East"
+  },
+  {
+    "Community": "Magic City Community LLC",
+    "Community Code": "MG",
+    "Region": "North"
+  },
+  {
+    "Community": "Milton Community LLC",
+    "Community Code": "MI",
+    "Region": "East"
+  },
+  {
+    "Community": "Maple Lane Community LLC",
+    "Community Code": "ML",
+    "Region": "West"
+  },
+  {
+    "Community": "Main Office H&S LLC",
+    "Community Code": "MO",
+    "Region": "West"
+  },
+  {
+    "Community": "Mill Pond Community LLC",
+    "Community Code": "MP",
+    "Region": "West"
+  },
+  {
+    "Community": "Mountain Road Park LLC",
+    "Community Code": "MR",
+    "Region": "West"
+  },
+  {
+    "Community": "Moxie Community LLC",
+    "Community Code": "MX",
+    "Region": "West"
+  },
+  {
+    "Community": "Metz Community & RV LLC",
+    "Community Code": "MZ",
+    "Region": "East"
+  },
+  {
+    "Community": "Northwest Community LLC",
+    "Community Code": "NW",
+    "Region": "West"
+  },
+  {
+    "Community": "Oaks Mobile Home & RV Park LLC",
+    "Community Code": "OA",
+    "Region": "West"
+  },
+  {
+    "Community": "Othello Manor LLC",
+    "Community Code": "OM",
+    "Region": "East"
+  },
+  {
+    "Community": "Olympic View Community LLC",
+    "Community Code": "OV",
+    "Region": "West"
+  },
+  {
+    "Community": "Pine Grove Community LLC",
+    "Community Code": "PG",
+    "Region": "East"
+  },
+  {
+    "Community": "Palouse Hills Community LLC",
+    "Community Code": "PL",
+    "Region": "East"
+  },
+  {
+    "Community": "Pace Manor LLC",
+    "Community Code": "PM",
+    "Region": "West"
+  },
+  {
+    "Community": "Prairie Pines LLC",
+    "Community Code": "PP",
+    "Region": "West"
+  },
+  {
+    "Community": "Pinewood Park LLC",
+    "Community Code": "PW",
+    "Region": "West"
+  },
+  {
+    "Community": "Radar Community LLC",
+    "Community Code": "RA",
+    "Region": "East"
+  },
+  {
+    "Community": "Ron'Cal Homes LLC",
+    "Community Code": "RC",
+    "Region": "West"
+  },
+  {
+    "Community": "Romack Development LLC",
+    "Community Code": "RD",
+    "Region": "West"
+  },
+  {
+    "Community": "Regal Community LLC",
+    "Community Code": "RE",
+    "Region": "West"
+  },
+  {
+    "Community": "Rivergrove Estates LLC",
+    "Community Code": "RG",
+    "Region": "East"
+  },
+  {
+    "Community": "Ridgeview Estates MHC LLC",
+    "Community Code": "RI",
+    "Region": "West"
+  },
+  {
+    "Community": "Rock Creek Mobile Manor LLC",
+    "Community Code": "RK",
+    "Region": "East"
+  },
+  {
+    "Community": "Romack Office H&S LLC",
+    "Community Code": "RO",
+    "Region": "West"
+  },
+  {
+    "Community": "Rocky Point Community LLC",
+    "Community Code": "RP",
+    "Region": "West"
+  },
+  {
+    "Community": "Rivershore Community LLC",
+    "Community Code": "RS",
+    "Region": "East"
+  },
+  {
+    "Community": "Rosewood Community LLC",
+    "Community Code": "RW",
+    "Region": "West"
+  },
+  {
+    "Community": "Savory Community LLC",
+    "Community Code": "SA",
+    "Region": "East"
+  },
+  {
+    "Community": "Sun Country Strip Mall LLC",
+    "Community Code": "SC",
+    "Region": "East"
+  },
+  {
+    "Community": "Sun Tides Community LLC",
+    "Community Code": "SD",
+    "Region": "West"
+  },
+  {
+    "Community": "Seacoma Community LLC",
+    "Community Code": "SE",
+    "Region": "West"
+  },
+  {
+    "Community": "Starlite Community LLC",
+    "Community Code": "SL",
+    "Region": "East"
+  },
+  {
+    "Community": "Squilchuck Creek Community LLC",
+    "Community Code": "SQ",
+    "Region": "West"
+  },
+  {
+    "Community": "Sunrise Estates LLC",
+    "Community Code": "SR",
+    "Region": "West"
+  },
+  {
+    "Community": "Sunrise Terrace Community LLC",
+    "Community Code": "ST",
+    "Region": "West"
+  },
+  {
+    "Community": "Sun City Center and Community LLC",
+    "Community Code": "SU",
+    "Region": "East"
+  },
+  {
+    "Community": "Sunset Village Mobile Home & RV Park LLC",
+    "Community Code": "SV",
+    "Region": "East"
+  },
+  {
+    "Community": "Sevdy's Community & RV Park LLC",
+    "Community Code": "SY",
+    "Region": "East"
+  },
+  {
+    "Community": "Tenino Estates LLC",
+    "Community Code": "TE",
+    "Region": "West"
+  },
+  {
+    "Community": "Timberland Village LLC",
+    "Community Code": "TV",
+    "Region": "West"
+  },
+  {
+    "Community": "Valley Community LLC",
+    "Community Code": "VC",
+    "Region": "West"
+  },
+  {
+    "Community": "VIP Community LLC",
+    "Community Code": "VP",
+    "Region": "West"
+  },
+  {
+    "Community": "Woodland Heights Community LLC",
+    "Community Code": "WC",
+    "Region": "East"
+  },
+  {
+    "Community": "White Dove Community LLC",
+    "Community Code": "WD",
+    "Region": "West"
+  },
+  {
+    "Community": "West Aire LLC",
+    "Community Code": "WE",
+    "Region": "West"
+  },
+  {
+    "Community": "Westgate Community LLC",
+    "Community Code": "WG",
+    "Region": "East"
+  },
+  {
+    "Community": "Warehouse H&S LLC",
+    "Community Code": "WH",
+    "Region": "East"
+  },
+  {
+    "Community": "Woodland Mobile Home & RV Park LLC",
+    "Community Code": "WO",
+    "Region": "West"
+  },
+  {
+    "Community": "Whispering Pines Community LLC",
+    "Community Code": "WP",
+    "Region": "East"
+  },
+  {
+    "Community": "Wheatland Village Community LLC",
+    "Community Code": "WV",
+    "Region": "North"
+  }
+]

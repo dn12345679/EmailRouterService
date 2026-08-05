@@ -103,20 +103,31 @@ export async function getUserAsync() {
         .select(['displayName', 'mail', 'userPrincipalName'])
         .get();
 }
+
+// address of user signed in
+let _ownerAddress = undefined;
+export async function getSignedInAddress() {
+  if (_ownerAddress !== undefined) return _ownerAddress;
+  try {
+    const u = await getUserAsync();
+    _ownerAddress = (u?.mail ?? u?.userPrincipalName ?? '').toLowerCase() || null;
+  } catch (e) {
+    console.error('getSignedInAddress failed:', e.message);
+    _ownerAddress = null;
+  }
+  return _ownerAddress;
+}
 // THIS ASSUMES that jessica is forwarded the email chain, rather than included in it
 
-/*
- Input: a valid conversationId referencing an email thread.
- Output: A JSON object containing 1 column: 'value'
-  'value' is an array of JSON object(s) where each object is an individual message.
-*/
+
 export async function getConversationMessagesAsync(conversationId) {
   if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
   }
   const result = await _userClient
-    .api(`/me/mailFolders/inbox/messages/`)
+    .api(`/me/messages`)
     .filter(`conversationId eq '${conversationId}'`)
+    .header('Prefer', 'IdType="ImmutableId"') // immutable so that no issues come up when the email thread is moved around
     .select([
       'subject',
       'from',
@@ -130,11 +141,12 @@ export async function getConversationMessagesAsync(conversationId) {
       'conversationIndex',
       'id',
       'internetMessageHeaders',
-      
+
       'bccRecipients',
       'replyTo',
       'sender'
     ])
+    .top(100)
     .get();
     // graph doesnot allow filtering and orderby at the same time.
   return result;
@@ -146,8 +158,7 @@ async function greetUserAsync() {
   try {
     const user = await getUserAsync();
     console.log(`Hello, ${user?.displayName}!`);
-    // For Work/school accounts, email is in mail property
-    // Personal accounts, email is in userPrincipalName
+
     console.log(`Email: ${user?.mail ?? user?.userPrincipalName ?? ''}`);
   } catch (err) {
     console.log(`Error getting user: ${err}`);
@@ -160,9 +171,10 @@ export async function getInboxAsync() {
   }
 
   return _userClient
+    // only check inbox messages (archive used for hiding from rechecking)
     .api('/me/mailFolders/inbox/messages')
-    .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId'])
-    .header('Prefer', 'outlook.body-content-type="text"')
+    .select(['from', 'isRead', 'receivedDateTime', 'subject', 'conversationId', 'id'])
+    .header('Prefer', 'IdType="ImmutableId", outlook.body-content-type="text"')
     .top(5)
     .orderby('receivedDateTime DESC')
     .get();
@@ -190,6 +202,8 @@ export async function getUniqueMessages() {
   const uc = await getInboxAsync();
   const unique_cid = [...new Set(uc.value.map(message => message.conversationId))];
 
+  const owner = await getSignedInAddress(); // lowercase address of this mailbox
+
   const output = [];
 
   for (const id of unique_cid) {
@@ -199,6 +213,12 @@ export async function getUniqueMessages() {
     const sorted = threadMessages.sort((a, b) =>
       new Date(a.receivedDateTime) - new Date(b.receivedDateTime)
     );
+
+    // newest message any
+    const lastIncoming = [...sorted].reverse().find(
+      msg => (msg.from?.emailAddress?.address || '').toLowerCase() !== owner
+    );
+    const lastResponseDate = lastIncoming?.receivedDateTime ?? null;
 
     const fullBody = sorted.map(msg => {
       const text = extractBodyTextWithCheerio(msg.uniqueBody?.content ?? '').join(" ");
@@ -219,6 +239,7 @@ export async function getUniqueMessages() {
       subject: latest.subject,
       synopsis: null,
       body: fullBody,
+      last_response_date: lastResponseDate,
       in_reply_to: replyInfo.inReplyTo ?? null,
       
       all_parties: Array.from(new Set(
@@ -233,7 +254,7 @@ export async function getUniqueMessages() {
       )),
 
       internal: false, // whether is from internal domain or not
-    });// rhw  all_parties component stores everybody that is involved. (for checking forwarding)
+    });
   }
   return output;
 }
@@ -274,13 +295,93 @@ export function extractBodyTextWithCheerio(htmlContent) {
 }
 
 
+function toRecipientList(recipients) {
+  const list = Array.isArray(recipients) ? recipients : [recipients];
+  return list
+    .filter(Boolean)
+    .map(address => ({ emailAddress: { address } }));
+}
+
+// forwardcs whole thread with messageId to recipients wiht a comment
+export async function forwardThreadAsync(messageId, recipients, comment = '') {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  const toRecipients = toRecipientList(recipients);
+  if (!toRecipients.length) {
+    throw new Error('forwardThreadAsync: at least one recipient is required');
+  }
+  return _userClient.api(`/me/messages/${messageId}/forward`).post({
+    comment,
+    toRecipients,
+  });
+}
+
+// reply all with status (used for closing)
+export async function replyAllToThreadAsync(messageId, comment) {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  return _userClient.api(`/me/messages/${messageId}/replyAll`).post({
+    comment,
+  });
+}
+
+// reply to singular (or all)
+export async function replyToThreadAsync(messageId, comment, toRecipients = null) {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  const list = toRecipientList(toRecipients ?? []);
+  if (!list.length) {
+    return _userClient.api(`/me/messages/${messageId}/replyAll`).post({ comment });
+  }
+  return _userClient.api(`/me/messages/${messageId}/reply`).post({
+    comment,
+    message: { toRecipients: list },
+  });
+}
+
+
+export async function getConversationMessageIdsAsync(conversationId) {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  const result = await _userClient
+    .api('/me/messages')
+    .filter(`conversationId eq '${conversationId}'`)
+    .header('Prefer', 'IdType="ImmutableId"')
+    .select(['id'])
+    .top(100)
+    .get();
+  return (result.value ?? []).map(m => m.id);
+}
+
+// archive message
+export async function archiveThreadAsync(conversationId) {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+  const ids = await getConversationMessageIdsAsync(conversationId);
+  let moved = 0;
+  for (const id of ids) {
+    try {
+      await _userClient.api(`/me/messages/${id}/move`).post({ destinationId: 'archive' });
+      moved++;
+    } catch (err) {
+      console.error(`archiveThreadAsync: failed to move message ${id}:`, err.message);
+    }
+  }
+  return moved;
+}
+
+
 export async function sendMailAsync(subject, body, recipient) {
-  // Ensure client isn't undefined
+
   if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
   }
 
-  // Create a new message
   const message = {
     subject: subject,
     body: {

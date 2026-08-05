@@ -1,0 +1,50 @@
+CREATE DATABASE email_router;
+\c email_router
+
+SET client_encoding = 'UTF8';
+
+CREATE TYPE email_status AS ENUM ('unread', 'read', 'complete');
+
+CREATE TABLE email (
+  conversation_id TEXT PRIMARY KEY,
+  id              TEXT,
+  status          email_status DEFAULT 'unread',
+  created         TIMESTAMP,
+  forwarded       BOOLEAN,
+  duplicate_of    TEXT REFERENCES email(conversation_id),
+  sender          TEXT,
+  subject         TEXT,
+  synopsis        TEXT,
+  body            TEXT,
+  in_reply_to     TEXT DEFAULT NULL,
+  updated         TIMESTAMP,
+  subject_main    TEXT,
+  subject_sub     TEXT,
+
+  archived        BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX idx_email_archived ON email (archived);
+
+CREATE TABLE email_property (
+  conversation_id TEXT REFERENCES email(conversation_id) ON DELETE CASCADE,
+  property_code   VARCHAR(10),
+  lot             VARCHAR(100),
+  PRIMARY KEY (conversation_id, property_code, lot)
+);
+
+CREATE TABLE recipients (
+  conversation_id    TEXT REFERENCES email(conversation_id),
+  reminder_date      TIMESTAMP,
+  reminder_count     INTEGER,
+  intended_recipient TEXT,
+  reminder_type      TEXT,
+  target_date        TIMESTAMP,
+  assigned_date      TIMESTAMP DEFAULT NOW(),
+  last_response_date TIMESTAMP,
+  interval_index     INTEGER DEFAULT 0,
+  PRIMARY KEY (conversation_id, intended_recipient)
+);
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX idx_synopsis_trgm ON email USING GIST (synopsis gist_trgm_ops);

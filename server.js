@@ -12,13 +12,14 @@ import {
   uploadToDB,
   getUniqueMessages,
 } from './graphHelper.js';
-import { 
-  insertIntoDB, 
+import {
+  insertIntoDB,
   classify_email_by_ID,
   classification_to_email,
   checkReminders,
   getReadEmailsWithIntents,
-  email_needs_reminder
+  email_needs_reminder,
+  executeIntents
  } from './dbManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -125,6 +126,29 @@ app.post('/api/group-selected', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 })
+
+app.post('/api/execute-plan', requireAuth, async (req, res) => {
+  const { conversationIds } = req.body ?? {};
+  try {
+    const plan = await executeIntents(conversationIds ?? null, { dryRun: true });
+    res.json(plan);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post('/api/execute', requireAuth, async (req, res) => {
+  const { conversationIds } = req.body ?? {};
+  try {
+    const result = await executeIntents(conversationIds ?? null, { dryRun: false });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 app.post('/api/classify-selected', requireAuth, async (req, res) => {

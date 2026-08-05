@@ -2,10 +2,14 @@ import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
 import { load } from 'cheerio';
-import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG } from "./appsettings.js"; 
+import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG, REMOVE_SENDER_ON_ESCALATION } from "./appsettings.js";
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
+  forwardThreadAsync,
+  replyAllToThreadAsync,
+  replyToThreadAsync,
+  archiveThreadAsync,
 } from './graphHelper.js';
 import fs from 'fs/promises'; 
 
@@ -102,7 +106,7 @@ hat fits as a title of the email in the form:
 9. Under "scheduledReminder" in "important", if there is a mention of a specific deadline(s), choose the one from the most recent email, and assign that value in the MM/DD/YYYY format to this property. Otherwise leave as "-".
 10. Under "forwardingNotNeeded" in "important", set this to true ONLY if the email explicitly states (do not assume) that forwarding is unnecessary or that it has already been sent to the correct recipient(s) 
    (e.g. "this does not need to be forwarded", "already sent to the right people", "no need to forward this"). 
-   Do not infer this from context or assume it based on who is included — only set true if the email says so directly. Otherwise, set false.
+   Do not infer this from context or assume it based on who is included - only set true if the email says so directly. Otherwise, set false.
 11. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
 
 ${TEMPLATE}
@@ -120,6 +124,48 @@ export const CLOSING_MESSAGE = (classification) =>
 
 const NO_CODE = 'none';
 const NO_LOT = 'unspecified';
+
+
+const DUPLICATE_CLOSING_MESSAGE = 'This message has been marked as a duplicate. Closing this thread.';
+const THREAD_COMPLETE_MESSAGE = 'This thread has been marked as complete. Thank you.';
+const REMINDER_MESSAGE = 'Was the thread complete?';
+const supervisorsEmail = () => ROUTING_CONFIG['Supervisors']?.email ?? null;
+
+// sender from internal domain (see env)
+function isInternalSender(sender) {
+  const domain = process.env.INTERNAL_DOMAIN?.toLowerCase();
+  if (!domain || !sender || !sender.includes('@')) return false;
+  return sender.split('@')[1].toLowerCase() === domain;
+}
+
+// reply to targets
+function replyTargets(m) {
+  if (isInternalSender(m.sender)) return null;
+  const sender = (m.sender || '').toLowerCase();
+  const recips = (m.intended_recipients ?? [])
+    .filter(Boolean)
+    .filter(a => a.toLowerCase() !== sender);
+  return recips.length ? recips : null; // no internal recipients -> fall back to reply-all
+}
+
+// fall back if thread kinda looks complete
+async function threadLooksResolved(threadText) {
+  if (!threadText || !threadText.trim()) return false;
+  try {
+    const msg = await client.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 5,
+      messages: [{
+        role: "user",
+        content: `Here is an email thread:\n\n${threadText}\n\nHas the issue in this thread been fully resolved with no further action needed? Answer with only "yes" or "no".`,
+      }],
+    });
+    return (msg.content[0]?.text || '').toLowerCase().includes('yes');
+  } catch (e) {
+    console.error('threadLooksResolved failed:', e.message);
+    return false; // fail safe: treat as unresolved so we still nudge
+  }
+}
 
 
 
@@ -291,29 +337,23 @@ export async function getReadEmailsWithIntents() {
              ARRAY_AGG(r.intended_recipient) FILTER (WHERE r.intended_recipient IS NOT NULL) AS intended_recipients
       FROM email e
       LEFT JOIN recipients r ON e.conversation_id = r.conversation_id
-      WHERE e.status = 'read' OR e.duplicate_of IS NOT NULL
+      WHERE (e.status = 'read' OR e.duplicate_of IS NOT NULL)
+        AND e.archived = false
       GROUP BY e.conversation_id
     `);
 
     const messages = result.rows;
     
-    console.log('[button3] messages pulled:', messages.length);
 
     const forward = messages.filter(m => !m.forwarded).map(m => [m.conversation_id, m.intended_recipients ?? []]);
     const complete = messages.filter(m => m.status === 'complete' && m.duplicate_of === null).map(m => m.conversation_id);
     const duplicate = messages.filter(m => m.duplicate_of !== null).map(m => [m.conversation_id, m.duplicate_of]);
 
-    console.log('[button3] forward candidates:', forward.map(([id]) => id));
-    console.log('[button3] complete candidates:', complete);
-    console.log('[button3] duplicate candidates:', duplicate.map(([id]) => id));
 
     const reminderIntents = { scheduled: [], reminder: [], supervisor: [] };
     await scheduleNewReminders(messages, reminderIntents);
-    console.log('[button3] newly scheduled:', reminderIntents.scheduled);
 
     await checkReminders(messages, reminderIntents);
-    console.log('[button3] due reminders:', reminderIntents.reminder);
-    console.log('[button3] supervisor escalations:', reminderIntents.supervisor);
 
     const intentsByConversationId = new Map();
 
@@ -347,6 +387,196 @@ export async function getReadEmailsWithIntents() {
     console.error(err);
     throw err;
   }
+}
+
+
+
+
+// 'dryRun' = true means that there will be a preview window, otherwise it just executes
+// Returns
+//   { dryRun, results: [ { conversationId, subject, synopsis, intent,
+//                          status: 'planned'|'done'|'error'|'skipped',
+//                          actions: [ { label, status, error? } ] } ] }
+function fmtDate(d) {
+  try { return new Date(d).toLocaleString(); } catch { return String(d); }
+}
+
+export async function executeIntents(conversationIds = null, { dryRun = true } = {}) {
+  const { messages, intents } = await getReadEmailsWithIntents();
+  const byId = new Map(messages.map(m => [m.conversation_id, m]));
+
+  const selected = (Array.isArray(conversationIds) && conversationIds.length)
+    ? messages.filter(m => conversationIds.includes(m.conversation_id))
+    : messages;
+
+  const results = [];
+
+  for (const m of selected) {
+    const entry = intents[m.conversation_id];
+    const intent = entry?.intent ?? null;
+    const actions = [];
+
+    // previews or performs
+    const perform = async (label, fn) => {
+      if (dryRun) { actions.push({ label, status: 'planned' }); return; }
+      try { await fn(); actions.push({ label, status: 'done' }); }
+      catch (e) { actions.push({ label, status: 'error', error: e.message }); }
+    };
+
+    // based on audience
+    const targets = replyTargets(m);
+    const audienceLabel = targets ? `reply to ${targets.join(', ')}` : 'reply-all';
+    const sendReply = (comment) =>
+      targets ? replyToThreadAsync(m.id, comment, targets) : replyAllToThreadAsync(m.id, comment);
+
+    // shared "mark complete" path, reused by the complete intent and by the resolution gate when a deadline-passed thread turns out to be resolved
+    const completeThread = async () => {
+      await perform(`Complete (${audienceLabel}): "${THREAD_COMPLETE_MESSAGE}"`,
+        () => sendReply(THREAD_COMPLETE_MESSAGE));
+      await perform(`Mark complete + archived in DB`,
+        () => pool.query(`UPDATE email SET status='complete', archived=true WHERE conversation_id=$1`, [m.conversation_id]));
+      await perform(`Archive thread in Outlook`,
+        () => archiveThreadAsync(m.conversation_id));
+    };
+
+    try {
+      if (!intent) {
+        actions.push({ label: 'No actionable intent', status: 'skipped' });
+      }
+
+      // duplicate thread
+      else if (intent === 'duplicate') {
+        const originalId = m.duplicate_of;
+        const original = originalId ? byId.get(originalId) : null;
+        const originalSender = original?.sender ?? null;
+
+        await perform(`Close duplicate thread (${audienceLabel}): "${DUPLICATE_CLOSING_MESSAGE}"`,
+          () => sendReply(DUPLICATE_CLOSING_MESSAGE));
+
+        if (originalSender) {
+          await perform(`Forward duplicate thread to original sender (${originalSender}), no comment`,
+            () => forwardThreadAsync(m.id, originalSender, ''));
+        }
+
+        await perform(`Archive duplicate thread in Outlook`,
+          () => archiveThreadAsync(m.conversation_id));
+        await perform(`Mark duplicate complete + archived in DB`,
+          () => pool.query(`UPDATE email SET status='complete', archived=true WHERE conversation_id=$1`, [m.conversation_id]));
+
+        if (originalId) {
+          await perform(`Archive original thread in Outlook`,
+            () => archiveThreadAsync(originalId));
+          await perform(`Mark original archived in DB`,
+            () => pool.query(`UPDATE email SET archived=true WHERE conversation_id=$1`, [originalId]));
+        }
+      }
+
+      // everything else that nots duplicate
+      else {
+        const recipients = (m.intended_recipients ?? []).filter(Boolean);
+
+        if (!m.forwarded && recipients.length) {
+          await perform(`Forward thread to: ${recipients.join(', ')}`,
+            () => forwardThreadAsync(m.id, recipients, ''));
+          await perform(`Mark forwarded in DB`,
+            () => pool.query(`UPDATE email SET forwarded=true WHERE conversation_id=$1`, [m.conversation_id]));
+        }
+
+        if (intent === 'complete') {
+          await completeThread();
+        }
+
+        // deadline passed -> send to supervisors. First gate on the LLM resolution check:
+        // if the thread already reads as resolved, complete it instead.
+        else if (intent === 'supervisor') {
+          const resolved = await threadLooksResolved(m.body || '');
+          actions.push({ label: `Resolution check -> ${resolved ? 'resolved' : 'not resolved'}`, status: 'done' });
+
+          if (resolved) {
+            await completeThread();
+          } else {
+            const sup = supervisorsEmail();
+            if (!sup) throw new Error('No Supervisors email configured in ROUTING_CONFIG');
+
+            if (REMOVE_SENDER_ON_ESCALATION) {
+              await perform(`Forward to Supervisors (${sup}); sender excluded`,
+                () => forwardThreadAsync(m.id, sup, ''));
+              if (m.sender) {
+                await perform(`Remove sender (${m.sender}) from recipients`,
+                  () => pool.query(`DELETE FROM recipients WHERE conversation_id=$1 AND intended_recipient=$2`, [m.conversation_id, m.sender]));
+              }
+            } else {
+              const combined = Array.from(new Set([sup, ...recipients]));
+              await perform(`Forward to Supervisors + existing recipients (${combined.join(', ')})`,
+                () => forwardThreadAsync(m.id, combined, ''));
+            }
+
+            await perform(`Reset reminder_date=NULL, reminder_count=0`,
+              () => pool.query(`UPDATE recipients SET reminder_date=NULL, reminder_count=0 WHERE conversation_id=$1`, [m.conversation_id]));
+            await perform(`Mark archived in DB`,
+              () => pool.query(`UPDATE email SET archived=true WHERE conversation_id=$1`, [m.conversation_id]));
+            await perform(`Archive thread in Outlook (so it is not re-escalated)`,
+              () => archiveThreadAsync(m.conversation_id));
+          }
+        }
+
+        else if (intent === 'reminder_scheduled') {
+          const date = entry.interestedParty;
+          await perform(`Set reminder_date = ${fmtDate(date)}`,
+            () => pool.query(`UPDATE recipients SET reminder_date=$2 WHERE conversation_id=$1`, [m.conversation_id, new Date(date)]));
+
+
+
+          // DB archived stays false so the reminder stays checkable
+          await perform(`Archive thread in Outlook (stays checkable in DB)`,
+            () => archiveThreadAsync(m.conversation_id));
+        }
+
+        // deadline passed, reminder due -> gate on the LLM resolution check:
+        // resolved => complete now, otherwise send the "Was the thread complete?" nudge and reschedule the next reminder
+        else if (intent === 'reminder') {
+          const date = entry.interestedParty;
+          const nextIndex = entry.nextIndex ?? null;
+          const resolved = await threadLooksResolved(m.body || '');
+          actions.push({ label: `Resolution check -> ${resolved ? 'resolved' : 'not resolved'}`, status: 'done' });
+
+          if (resolved) {
+            await completeThread();
+          } else {
+            await perform(`Reminder (${audienceLabel}): "${REMINDER_MESSAGE}"`,
+              () => sendReply(REMINDER_MESSAGE));
+            await perform(`Increment reminder_count, set next reminder_date=${fmtDate(date)}${nextIndex != null ? `, interval_index=${nextIndex}` : ''}`,
+              () => pool.query(
+                `UPDATE recipients SET reminder_count = reminder_count + 1, reminder_date=$2, interval_index=COALESCE($3, interval_index) WHERE conversation_id=$1`,
+                [m.conversation_id, new Date(date), nextIndex]));
+            await perform(`Archive thread in Outlook (stays checkable in DB)`,
+              () => archiveThreadAsync(m.conversation_id));
+          }
+        }
+
+        else if (intent === 'forward') {
+          // forwarding already performed above, nothing else this run
+          if (m.forwarded && !recipients.length) {
+            actions.push({ label: 'Already forwarded; nothing else to do', status: 'skipped' });
+          }
+        }
+      }
+    } catch (e) {
+      actions.push({ label: `Fatal: ${e.message}`, status: 'error' });
+    }
+
+    const hadError = actions.some(a => a.status === 'error');
+    results.push({
+      conversationId: m.conversation_id,
+      subject: m.subject,
+      synopsis: m.synopsis,
+      intent: intent ?? '-',
+      actions,
+      status: hadError ? 'error' : (dryRun ? 'planned' : 'done'),
+    });
+  }
+
+  return { dryRun, results };
 }
 
 
@@ -418,7 +648,7 @@ function parsePropertyPairs(codes, lots) {
 // and replaces the row in email property (because they changed)
 async function upsertPropertyPairs(client, conversationId, codes, lots) {
   if (typeof conversationId !== 'string') {
-    throw new Error('upsertPropertyPairs: conversationId must be a string — check argument order');
+    throw new Error('upsertPropertyPairs: conversationId must be a string');
   }
   const pairs = parsePropertyPairs(codes, lots);
 
@@ -449,6 +679,38 @@ export function party_included_list(list, party) {
 // for checking email domain
 export function email_within_domain(domain, email) {
   return domain === email.split("@")[1].toLowerCase()
+}
+
+
+function determineReminderAction(recipientRow, config) {
+  const now = new Date();
+
+  // if the hard deadline passed, just send to supervisors
+  const hardDeadlineBlown =
+    config.completeByDate &&
+    recipientRow.target_date &&
+    now > new Date(recipientRow.target_date);
+
+  if (hardDeadlineBlown) return 'supervisor';
+
+  const reminderDue =
+    recipientRow.reminder_date && now > new Date(recipientRow.reminder_date);
+
+  if (!reminderDue) return 'none';
+
+  return recipientRow.reminder_count >= 8 ? 'supervisor' : 'reminder_due';
+}
+
+
+// picks the next best deadline
+function nextReminderDate(row, nextIndex) {
+  const config = REMINDER_CONFIG[row.reminder_type] ?? REMINDER_CONFIG['Miscellaneous'];
+  const intervalDate = getReminderDateForRecipient(row.reminder_type, row.target_date, { ...row, interval_index: nextIndex });
+  
+  if (row.target_date && new Date(row.target_date) < intervalDate) {
+    return new Date(row.target_date);
+  }
+  return intervalDate;
 }
 
 
@@ -487,7 +749,7 @@ export async function insertIntoDB(emails) {
 
       if (similar) {
         email.status = 'complete';
-        email.forwarded = true; // duplicate path: still a stored fact, not an action
+        email.forwarded = true; 
 
         await client.query(`
           INSERT INTO email (
@@ -498,7 +760,8 @@ export async function insertIntoDB(emails) {
             status = EXCLUDED.status,
             forwarded = EXCLUDED.forwarded,
             updated = EXCLUDED.updated,
-            duplicate_of = EXCLUDED.duplicate_of
+            duplicate_of = EXCLUDED.duplicate_of,
+            archived = false
         `, [
           email.conversationId, email.id, email.status, email.created || null,
           email.forwarded, email.updated, email.sender, email.subject,
@@ -534,7 +797,8 @@ export async function insertIntoDB(emails) {
           updated = EXCLUDED.updated, sender = EXCLUDED.sender, subject = EXCLUDED.subject,
           body = EXCLUDED.body, in_reply_to = EXCLUDED.in_reply_to, forwarded = EXCLUDED.forwarded,
           synopsis = EXCLUDED.synopsis, subject_main = EXCLUDED.subject_main,
-          subject_sub = EXCLUDED.subject_sub, duplicate_of = EXCLUDED.duplicate_of
+          subject_sub = EXCLUDED.subject_sub, duplicate_of = EXCLUDED.duplicate_of,
+          archived = false
       `, [
         email.conversationId, email.id, email.status, email.created || null,
         email.forwarded ?? null, email.updated, email.sender, email.subject,
@@ -564,6 +828,17 @@ export async function insertIntoDB(emails) {
             `, [email.conversationId, recipientEmail, reminderType, targetDate, sentDate]);
           }
         }
+      }
+
+      // update last response
+      if (email.last_response_date) {
+        await client.query(
+          `UPDATE recipients
+             SET last_response_date = $2
+           WHERE conversation_id = $1
+             AND (last_response_date IS NULL OR last_response_date < $2)`,
+          [email.conversationId, email.last_response_date]
+        );
       }
     }
 
@@ -697,30 +972,3 @@ export async function checkReminders(emails, intents) {
   }
 }
 
-
-async function fetch_read() {
-  const result = await pool.query(`
-    SELECT m.conversationId
-    FROM email m
-    WHERE m.status = 'read'
-  `);
-}
-
-
-
-
-// Checks to see if a given email with an emailId comes from an internal domain
-// boolean return
-function fromInternalDomain(emails, emailId) {
-   const emailaddress = getValById(emails, "id", emailId, "sender");
-   const domain = emailaddress.split("@");
-   return domain[1].includes(process.env.INTERNAL_DOMAIN);
-}
-
-// given a JSON array emails, a column name colSearch, 
-// a value to index colSearch, and a target output column to grab,
-// returns the target output column's value.
-function getValById(emails, colSearch, colSearchValue, colTarget) {
-  const email = emails.find(item => item[colSearch] === colSearchValue);
-  return email[colTarget];
-}

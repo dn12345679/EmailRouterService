@@ -1,5 +1,10 @@
 .env
 node_modules
 CSV
-propertyToRegion.json
 dist
+config/config.js
+
+# auth / token caches — never commit these
+token_cache.json
+auth-record.json
+*.token
