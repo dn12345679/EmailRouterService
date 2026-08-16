@@ -241,12 +241,13 @@ a { color: var(--accent); }
 
 /* ---------------- Dashboard ---------------- */
 
-#dashboard-view { 
+#dashboard-view {
   padding: 32px clamp(16px, 4vw, 56px) 64px;
    max-width: 100%;
-   height: 100vh;
+   min-height: 100vh;
     margin: 0 auto;
-  background: #e9e9e9;  
+  background: #e9e9e9;
+  position: relative;
 }
 
 .topbar {
@@ -384,6 +385,96 @@ a { color: var(--accent); }
 .mono-input { font-family: var(--font-mono) !important; font-size: 0.8rem !important; }
 
 .run-btn { align-self: flex-start; }
+
+/* thread-count fetch controls */
+.fetch-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.fetch-count-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mini-select,
+.mini-input {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+  color: var(--text);
+}
+.mini-input { width: 84px; }
+.mini-select:focus,
+.mini-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+/* inspect-by-id box */
+.inspect-box {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.inspect-title { font-size: 0.9rem; margin: 0; }
+.inspect-input { width: 100%; box-sizing: border-box; }
+table.kv { font-size: 0.78rem; margin-top: 4px; }
+table.kv .kv-key { color: var(--text-muted); white-space: nowrap; padding-right: 12px; vertical-align: top; }
+
+/* per-row conversation id + copy button */
+.id-cell { white-space: nowrap; }
+.short-id {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-right: 6px;
+}
+.copy-id {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  color: var(--text);
+  cursor: pointer;
+}
+.copy-id:hover { border-color: var(--accent); color: var(--accent); }
+
+/* pagination controls */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 0.8rem;
+}
+.pager-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  color: var(--text);
+  cursor: pointer;
+}
+.pager-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pager-btn:disabled { opacity: 0.4; cursor: default; }
+.pager-info { color: var(--text-muted); }
+
+/* intents group-by toolbar */
+.intent-toolbar { margin-bottom: 10px; }
 
 /* output panes */
 

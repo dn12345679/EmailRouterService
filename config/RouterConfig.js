@@ -33,12 +33,24 @@ export const DEFAULT_REMINDER_CONFIG = {
   },
 };
 
+export const DEFAULT_NEEDS_INFO_CONFIG = {
+  enabled: true,
+  // subject buckets that never need a property/lot 
+  skipSubjects: ["Miscellaneous"],
+  // which identifiers are required, prompt when a required one is missing
+  requirePropertyCode: true,
+  requireLot: true,
+  message:
+    "Thank you for your inquiry, but would you be able to specify the Property Code and Lot number for identification?",
+};
+
 export class RouterConfig {
   constructor() {
     this.SUBJECT_BUCKETS = null;
     this.CONDITION_BUCKETS = null;
     this.ROUTING_CONFIG = null;
     this.REMINDER_CONFIG = DEFAULT_REMINDER_CONFIG;
+    this.NEEDS_INFO_CONFIG = DEFAULT_NEEDS_INFO_CONFIG;
     this.REMOVE_SENDER_ON_ESCALATION = true;
   }
 

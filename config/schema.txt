@@ -21,7 +21,8 @@ CREATE TABLE email (
   subject_main    TEXT,
   subject_sub     TEXT,
 
-  archived        BOOLEAN NOT NULL DEFAULT FALSE
+  archived        BOOLEAN NOT NULL DEFAULT FALSE,
+  flagged_complete BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX idx_email_archived ON email (archived);

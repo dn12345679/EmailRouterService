@@ -9,7 +9,7 @@ import { TokenCredentialAuthenticationProvider } from
 
 
 import { load } from 'cheerio'; 
-import { insertIntoDB }  from './dbManager.js';
+import { insertIntoDB, isIgnoredSender }  from './dbManager.js';
 
 import fs from 'fs/promises';
 import path from 'path';
@@ -193,14 +193,45 @@ function extractReplyInfo(msg) {
   };
 }
 
-// part of uploadToDB(), just gets all the unique conversation threads
-export async function getUniqueMessages() {
+// Gathers up to `threadCount` unique conversation ids from the inbox, most-recent first.
+// A single thread can span several inbox messages, so we page through messages until we
+// have enough distinct conversations (or the inbox runs out).
+async function getRecentConversationIds(threadCount) {
+  const wanted = Math.max(1, Number(threadCount) || 1);
+  const seen = new Set();
+  const ordered = [];
+  const pageSize = Math.min(100, Math.max(wanted, 25)); // graph caps page size at 1000
+
+  let page = await _userClient
+    .api('/me/mailFolders/inbox/messages')
+    .select(['conversationId', 'receivedDateTime'])
+    .header('Prefer', 'IdType="ImmutableId"')
+    .top(pageSize)
+    .orderby('receivedDateTime DESC')
+    .get();
+
+  while (page) {
+    for (const m of page.value ?? []) {
+      if (m.conversationId && !seen.has(m.conversationId)) {
+        seen.add(m.conversationId);
+        ordered.push(m.conversationId);
+        if (ordered.length >= wanted) return ordered;
+      }
+    }
+    const next = page['@odata.nextLink'];
+    if (!next) break;
+    page = await _userClient.api(next).get();
+  }
+  return ordered;
+}
+
+// part of uploadToDB(), just gets the `threadCount` most recent unique conversation threads
+export async function getUniqueMessages(threadCount = 10) {
  if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
   }
-  
-  const uc = await getInboxAsync();
-  const unique_cid = [...new Set(uc.value.map(message => message.conversationId))];
+
+  const unique_cid = await getRecentConversationIds(threadCount);
 
   const owner = await getSignedInAddress(); // lowercase address of this mailbox
 
@@ -225,6 +256,10 @@ export async function getUniqueMessages() {
       return `[${msg.receivedDateTime} - ${msg.from?.emailAddress?.address}]:\n${text}`;
     }).join('\n\n---\n\n');
 
+    // skip automated / notification threads (no-reply, Teams, etc.) entirely
+    const sender = sorted[0].from?.emailAddress?.address;
+    if (isIgnoredSender(sender)) continue;
+
     const latest = sorted[sorted.length - 1];
     const replyInfo = extractReplyInfo(latest);
 
@@ -235,7 +270,7 @@ export async function getUniqueMessages() {
       created: sorted[0].receivedDateTime,
       forwarded: false,
       updated: latest.receivedDateTime,
-      sender: sorted[0].from?.emailAddress?.address,
+      sender: sender,
       subject: latest.subject,
       synopsis: null,
       body: fullBody,
@@ -260,12 +295,12 @@ export async function getUniqueMessages() {
 }
 
 // handles uploading
-export async function uploadToDB() {
+export async function uploadToDB(threadCount = 10) {
   if (!_userClient) {
     throw new Error('Graph has not been initialized for user auth');
   }
-  
-  const output = await getUniqueMessages()
+
+  const output = await getUniqueMessages(threadCount)
 
   console.log(`Total emails: ${output.length}`);
   

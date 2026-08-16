@@ -19,7 +19,8 @@ import {
   checkReminders,
   getReadEmailsWithIntents,
   email_needs_reminder,
-  executeIntents
+  executeIntents,
+  inspectConversations
  } from './dbManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -91,9 +92,25 @@ function requireAuth(req, res, next) {
 
 app.get('/api/inbox', requireAuth, async (req, res) => {
   try {
-    //const msgs = await getInboxAsync();
-    const msgs = await getUniqueMessages();
+    // how many unique threads to pull (1/10/50/100 or a custom amount); default 10
+    const count = Math.min(500, Math.max(1, parseInt(req.query.count, 10) || 10));
+    const msgs = await getUniqueMessages(count);
     res.json(msgs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post('/api/inspect', requireAuth, async (req, res) => {
+  const { conversationIds } = req.body ?? {};
+  if (!Array.isArray(conversationIds) || conversationIds.length === 0) {
+    return res.status(400).json({ error: 'conversationIds array is required' });
+  }
+  try {
+    const info = await inspectConversations(conversationIds);
+    res.json(info);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -169,7 +186,8 @@ app.post('/api/classify-selected', requireAuth, async (req, res) => {
 
 app.post('/api/classify-all', requireAuth, async (req, res) => {
   try {
-    const result = await uploadToDB();
+    const count = Math.min(500, Math.max(1, parseInt(req.body?.count, 10) || 10));
+    const result = await uploadToDB(count);
     res.json({ ok: true, count: result.length });
   } catch (err) {
     console.error(err);

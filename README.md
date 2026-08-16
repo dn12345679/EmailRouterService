@@ -9,9 +9,10 @@ it to the right people via `ROUTING_CONFIG`, detects likely duplicates by
 synopsis similarity, and upserts everything. 
 
 **Check All Intents** (`getReadEmailsWithIntents`)
-Reads back the non-archived threads and computes one intent per thread:
-`duplicate`, `forward`, `complete`, `reminder_scheduled`, `reminder`, or
-`supervisor`. Read only
+Reads back the non-archived threads and computes the applicable intents per
+thread (a thread can carry more than one, e.g. `forward` + `reminder_scheduled`):
+`duplicate`, `needs_info`, `forward`, `complete`, `reminder_scheduled`,
+`reminder`, or `supervisor`. Read only
 
 **Submit and Save** (`executeIntents`)
 Tick the threads you want (or use the header "select all"), then Submit. You get
@@ -21,19 +22,43 @@ Execute**. On confirm it performs the Graph writes (to outlook) and DB updates
 
 ### what are the 'intents'?
 
+The intents aren't all the same kind of thing. They sort into categories, and the
+category decides how they combine and in what order they run:
+
+| Category | Intents | Behavior |
+|---|---|---|
+| **Pre-filter** (not intents) | ignored sender, archived | dropped before any intent logic runs |
+| **Gate Step** | `duplicate`, `needs_info` | exclusive and terminal |
+| **Preparation Step** | `forward` | attaches in front of a **Lifecycle** action (does not stop the thread) |
+| **Lifecycle Step** (pick exactly one) | `complete`, `supervisor` (escalate), `reminder` (send), `reminder_scheduled` (set) | mutually exclusive states of the thread |
+| **Default** | `none` | do nothing |
+
+Intent order of operation: `duplicate` -> `needs_info` ->
+`forward` (composable) -> one of `complete` / `supervisor` / `reminder` /
+`reminder_scheduled` -> `none`.
+
 - **duplicate** - closes the duplicate thread, folds it into the original
   sender, archives both, marks the duplicate complete. Duplicates are always
   completed so they stop being tracked.
 - **forward** - forwards the whole thread to the routed recipients if Graph
   shows they aren't already on it, then continues.
-- **complete** - replies "thread complete", marks it complete + archived.
+- **complete** - Claude flagged the thread as resolved. This is only a *premature* flag:
+  the thread stays `read` and is surfaced here for confirmation. On execute it forwards to
+  any still-missing recipients, replies "thread complete", then marks it complete + archived.
+  A thread that is already `status = 'complete'` is finished and never gets any intent.
 - **reminder** - runs an LLM resolution check on
   the thread. If it reads as resolved it is completed; otherwise it sends
   "Was the thread complete?", increments the reminder count, and reschedules.
 - **supervisor** (escalation) - same resolution check first; if unresolved it
-  forwards to Supervisors, resets the reminder state, and archives.
+  forwards to Supervisors, resets the reminder state, then marks it complete +
+  archived (once escalated it is out of the app's hands).
 - **reminder_scheduled** - sets the first reminder date and archives the Outlook
   message (kept checkable in the DB).
+- **needs_info** - Claude couldn't identify the property code and/or lot (and the
+  thread isn't Misc, a duplicate, or already forwarded), so instead of routing it
+  blindly it replies asking the sender to specify the Property Code and Lot
+  number, then archives until they reply.
+- **none** - nothing to do; the thread is left untouched.
 
 ### Sender handling (internal vs. 3rd-party)
 
@@ -55,8 +80,9 @@ clock when a party replies.
 
 Reminder types with `completeByDate: true` (`Specific Deadline`,
 `Intent to Vacate`) escalate straight to Supervisors once their `target_date`
-passes, regardless of reminder count. Everything else escalates only after
-`reminder_count` reaches 8.
+passes, regardless of reminder count. Everything else escalates only once
+`reminder_count` exceeds 8 (i.e. `> 8`). A thread flagged complete in any way
+(the `complete` intent, or already `status = 'complete'`) never escalates.
 
 ### Archiving & collection
 
@@ -90,7 +116,8 @@ CREATE TABLE email (
   updated         TIMESTAMP,
   subject_main    TEXT,
   subject_sub     TEXT,
-  archived        BOOLEAN NOT NULL DEFAULT FALSE  
+  archived        BOOLEAN NOT NULL DEFAULT FALSE,
+  flagged_complete BOOLEAN NOT NULL DEFAULT FALSE  -- Claude flagged it resolved; surfaced as a `complete` intent, finalized on execute
 );
 
 CREATE INDEX idx_email_archived ON email (archived);

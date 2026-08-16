@@ -3,6 +3,7 @@ node_modules
 CSV
 dist
 config/config.js
+ARCHITECTURE.md
 
 # auth / token caches — never commit these
 token_cache.json

@@ -15,6 +15,7 @@ export const CONDITION_BUCKETS = userConfig.CONDITION_BUCKETS;
 export const REMINDER_CONFIG = userConfig.REMINDER_CONFIG;
 export const ROUTING_CONFIG = userConfig.ROUTING_CONFIG;
 export const REMOVE_SENDER_ON_ESCALATION = userConfig.REMOVE_SENDER_ON_ESCALATION;
+export const NEEDS_INFO_CONFIG = userConfig.NEEDS_INFO_CONFIG;
 
 const settings = {
   clientId: process.env.EML_CLIENT_ID,

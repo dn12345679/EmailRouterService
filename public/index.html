@@ -70,31 +70,21 @@
         <span class="job-index">01</span>
         <h2>List inbox</h2>
       </div>
-      <p class="card-desc">Pulls the 10 most recent inbox messages.</p>
-      <button class="btn btn-primary run-btn" data-job="inbox">Run</button>
-      <div class="output" data-output="inbox"></div>
-    </article>
-
-    <!-- Job: Send mail       THIS IS HIDDEN because probably not needed for now-->
-    <article class="card hidden">
-      <div class="card-head">
-        <span class="job-index">02</span>
-        <h2>Send mail</h2>
+      <p class="card-desc">Pulls the most recent unique inbox threads.</p>
+      <div class="fetch-controls">
+        <label class="fetch-count-label">Threads
+          <select id="fetch-count" class="mini-select">
+            <option value="1">1</option>
+            <option value="10" selected>10</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+        <input id="fetch-count-custom" class="mini-input hidden" type="number" min="1" max="500" placeholder="#" />
+        <button class="btn btn-primary run-btn" data-job="inbox">Run</button>
       </div>
-      <p class="card-desc">Sends a plain message through the signed-in mailbox.</p>
-      <form id="send-mail-form" class="form">
-        <label>To
-          <input type="email" name="recipient" required placeholder="name@example.com" />
-        </label>
-        <label>Subject
-          <input type="text" name="subject" required placeholder="Subject line" />
-        </label>
-        <label>Body
-          <textarea name="body" required rows="3" placeholder="Message body"></textarea>
-        </label>
-        <button type="submit" class="btn btn-primary">Send</button>
-      </form>
-      <div class="output" data-output="send-mail"></div>
+      <div class="output" data-output="inbox"></div>
     </article>
 
 
@@ -112,23 +102,15 @@
       <div class="output" data-output="classify-selected" type="status-node-classification"></div>
       <div class="output" data-output="group-selected" type="status-node-group-selected"></div>
       <div class="output" data-output="submit-selected" type="status-node-submit-selected"></div>
-    </article>
 
-
-    <!-- Job: Classify single email (probably not necessary for development) reminder to remove this later  -->
-    <article class="card hidden">
-      <div class="card-head">
-        
-        <h2>Classify email</h2>
+      <!-- Inspect: paste conversation IDs to dump their full DB state -->
+      <div class="inspect-box">
+        <h3 class="inspect-title">Inspect by conversation ID</h3>
+        <p class="card-desc">Paste one or more conversation IDs (comma or newline separated) to see the stored email, property, recipient, and intent data.</p>
+        <textarea id="inspect-ids" class="mono-input inspect-input" rows="2" placeholder="AAQkADQz..., AAQkADQz..."></textarea>
+        <button class="btn btn-secondary run-btn" data-job="inspect">Inspect</button>
+        <div class="output" data-output="inspect"></div>
       </div>
-      <p class="card-desc">Classifies a single thread by conversation ID</p>
-      <form id="classify-email-form" class="form">
-        <label>Conversation ID
-          <input type="text" name="id" required placeholder="AAQkADQzNTI4..." class="mono-input" />
-        </label>
-        <button type="submit" class="btn btn-primary">Classify</button>
-      </form>
-      <div class="output" data-output="classify-email"></div>
     </article>
 
   </section>

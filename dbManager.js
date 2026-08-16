@@ -2,7 +2,7 @@ import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
 import { load } from 'cheerio';
-import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG, REMOVE_SENDER_ON_ESCALATION } from "./appsettings.js";
+import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG, REMOVE_SENDER_ON_ESCALATION, NEEDS_INFO_CONFIG } from "./appsettings.js";
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
@@ -26,6 +26,21 @@ const __dirname = path.dirname(__filename);
 const region_tracker = path.join(__dirname, 'propertyToRegion.json');
 const response = await fs.readFile(region_tracker, 'utf8');
 const data = JSON.parse(response);
+
+// Property codes are guaranteed to exist in propertyToRegion.json, and lot numbers are
+// guaranteed never to match a property code. So the authoritative test for "is this token a
+// property code?" is simply membership in this set -- anything else (numeric like "55" or
+// alphanumeric like "A44") is a lot. This is how we tell codes and lots apart when the
+// classifier lumps them together.
+const PROPERTY_CODES = new Set(
+  (data ?? [])
+    .map(o => o?.['Community Code'])
+    .filter(Boolean)
+    .map(c => String(c).trim().toUpperCase())
+);
+export function isRealPropertyCode(token) {
+  return !!token && PROPERTY_CODES.has(String(token).trim().toUpperCase());
+}
 
 
 
@@ -68,7 +83,7 @@ export const EXAMPLE =
   },
   "important": {
     "synopsis": "BV 99 Pavement Path Damaged",
-    "summary": "this is a summary of the email in 100 words or less",
+    "summary": "this is a summary of the email in 10 words or less",
     "completed": false,
     "removeFromThread": [],
     "reminderType": "Miscellaneous",
@@ -95,7 +110,7 @@ the emails in the chain are in, as noted by the date and time of received. The m
    - Property Code enclosed in array format regardless of count []. If there are multiple 2 Letter Property Codes, List them in an array format like this: [BV, AP]
    - Lot Number enclosed in array format regardless of count []. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
 4. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
-5. Under the "completed" field in "important", Set completed = true if the thread reaches a clear resolution  (e.g. "looks good", "thanks for completing this", or similar  closing acknowledgment) AND no message after that point raises  a new problem or requests further action. Otherwise, completed = false.
+5. Under the "completed" field in "important", Set completed = true if the thread reaches a clear resolution, specifically from the initial sender or all involved parties (e.g. "looks good", "thanks for completing this", or similar  closing acknowledgment) AND no message after that point raises  a new problem or requests further action. Otherwise, completed = false.
 6. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
 7. Under "synopsis" field in "important", create a string of around 5-6 words t
 hat fits as a title of the email in the form: 
@@ -128,8 +143,25 @@ const NO_LOT = 'unspecified';
 
 const DUPLICATE_CLOSING_MESSAGE = 'This message has been marked as a duplicate. Closing this thread.';
 const THREAD_COMPLETE_MESSAGE = 'This thread has been marked as complete. Thank you.';
-const REMINDER_MESSAGE = 'Was the thread complete?';
+const REMINDER_MESSAGE = (due_date) =>  `Has this task been completed? ${due_date}`;
 const supervisorsEmail = () => ROUTING_CONFIG['Supervisors']?.email ?? null;
+
+// Automated / notification senders we never want to route, classify, or remind on.
+// Add patterns here (matched case-insensitively against the sender address).
+const IGNORED_SENDER_PATTERNS = [
+  /no-?reply@/i,
+  /do-?not-?reply@/i,
+  /don'?treply@/i,
+  /notifications?@/i,
+  /mailer-daemon@/i,
+  /postmaster@/i,
+  /@.*\.?teams\.microsoft\.com$/i,
+];
+export function isIgnoredSender(sender) {
+  if (!sender) return false;
+  const a = String(sender).toLowerCase();
+  return IGNORED_SENDER_PATTERNS.some((re) => re.test(a));
+}
 
 // sender from internal domain (see env)
 function isInternalSender(sender) {
@@ -315,6 +347,8 @@ async function find_similar_synopsis(client, synopsis, propertyCodes, lots, subj
     WHERE e.subject_main = $4
       AND e.subject_sub = $5
       AND e.conversation_id != $6
+      AND e.duplicate_of IS NULL          -- only match a canonical original, never another duplicate
+      AND e.status <> 'complete'          -- don't fold into / reopen an already-finished thread
       AND similarity(e.synopsis, $1) > 0.3
     ORDER BY score DESC
     LIMIT 1;
@@ -330,59 +364,169 @@ function conditionsMatch(ruleConditions, context) {
   );
 }
 
+// Debug/inspection helper: given conversation ids, return everything the DB knows about
+// each thread -- the email row, its property pairs, its recipient/reminder rows, and the
+// currently-computed intent list -- so the whole state can be viewed from the UI.
+export async function inspectConversations(ids) {
+  const list = (ids ?? []).map(s => String(s).trim()).filter(Boolean);
+  if (!list.length) return [];
+
+  const [emails, props, recips] = await Promise.all([
+    pool.query(`SELECT * FROM email WHERE conversation_id = ANY($1)`, [list]),
+    pool.query(`SELECT * FROM email_property WHERE conversation_id = ANY($1)`, [list]),
+    pool.query(`SELECT * FROM recipients WHERE conversation_id = ANY($1)`, [list]),
+  ]);
+
+  // intents are computed over the full working set; pull the map once and index into it
+  let intentMap = {};
+  try {
+    ({ intents: intentMap } = await getReadEmailsWithIntents());
+  } catch (e) {
+    console.error('inspectConversations: intent computation failed:', e.message);
+  }
+
+  return list.map(id => ({
+    conversationId: id,
+    email: emails.rows.find(e => e.conversation_id === id) ?? null,
+    properties: props.rows.filter(p => p.conversation_id === id),
+    recipients: recips.rows.filter(r => r.conversation_id === id),
+    intents: intentMap[id] ?? [],
+  }));
+}
+
 export async function getReadEmailsWithIntents() {
   try {
+
     const result = await pool.query(`
       SELECT e.*, 
              ARRAY_AGG(r.intended_recipient) FILTER (WHERE r.intended_recipient IS NOT NULL) AS intended_recipients
       FROM email e
       LEFT JOIN recipients r ON e.conversation_id = r.conversation_id
-      WHERE (e.status = 'read' OR e.duplicate_of IS NOT NULL)
-        AND e.archived = false
+      WHERE e.archived = false
+        AND (e.status = 'read' OR e.duplicate_of IS NOT NULL)
       GROUP BY e.conversation_id
     `);
 
-    const messages = result.rows;
-    
+    // drop automated/notification threads entirely (no-reply, Teams, etc.) so they never
+    // get intents even if an older row is still in the DB
+    const messages = result.rows.filter(m => !isIgnoredSender(m.sender));
 
-    const forward = messages.filter(m => !m.forwarded).map(m => [m.conversation_id, m.intended_recipients ?? []]);
-    const complete = messages.filter(m => m.status === 'complete' && m.duplicate_of === null).map(m => m.conversation_id);
-    const duplicate = messages.filter(m => m.duplicate_of !== null).map(m => [m.conversation_id, m.duplicate_of]);
+    // intents are now a LIST per thread: intents[convId] = [ { intent, interestedParty, ... }, ... ]
+    // An absent key or empty list means "do nothing" -- the default when a thread does not
+    // need forwarding, is not a real duplicate, and has no reminder to set/send/escalate.
+    const intentsByConversationId = new Map();
+    const pushIntent = (convId, obj) => {
+      if (!intentsByConversationId.has(convId)) intentsByConversationId.set(convId, []);
+      intentsByConversationId.get(convId).push(obj);
+    };
 
+    // "Needs information": threads we can't route because Claude couldn't pin down the
+    // property code and/or lot. These get a reply asking the sender to identify the property
+    // instead of being forwarded/reminded/escalated.
+    const needsInfoSet = new Set();
+    if (NEEDS_INFO_CONFIG?.enabled && messages.length) {
+      const convIds = messages.map(m => m.conversation_id);
+      // Pull the raw tokens and classify each against propertyToRegion.json rather than
+      // trusting which column it landed in -- a real code (in the JSON) means "has code",
+      // any other non-placeholder token means "has lot". This is robust even to rows where
+      // the classifier stored a lot ("55", "A44") in the property_code column.
+      const propRes = await pool.query(
+        `SELECT conversation_id, property_code, lot FROM email_property WHERE conversation_id = ANY($1)`,
+        [convIds]
+      );
+      const presence = new Map(); // convId -> { hasCode, hasLot }
+      for (const row of propRes.rows) {
+        if (!presence.has(row.conversation_id)) presence.set(row.conversation_id, { hasCode: false, hasLot: false });
+        const agg = presence.get(row.conversation_id);
+        for (const token of [row.property_code, row.lot]) {
+          const t = String(token ?? '').trim();
+          if (!t || t.toLowerCase() === NO_CODE || t.toLowerCase() === NO_LOT) continue;
+          if (isRealPropertyCode(t)) agg.hasCode = true;
+          else agg.hasLot = true;
+        }
+      }
+      const skipSubjects = new Set(NEEDS_INFO_CONFIG.skipSubjects ?? []);
+
+      for (const m of messages) {
+        if (skipSubjects.has(m.subject_main)) continue; // e.g. Miscellaneous never needs a lot
+        if (m.duplicate_of !== null) continue;          // duplicates inherit the original's identity
+        if (m.flagged_complete) continue;               // a resolved thread should be completed, not asked for info
+        if (m.forwarded) continue;                       // already routed / in progress
+        const p = presence.get(m.conversation_id) ?? { hasCode: false, hasLot: false };
+        const missingCode = NEEDS_INFO_CONFIG.requirePropertyCode && !p.hasCode;
+        const missingLot = NEEDS_INFO_CONFIG.requireLot && !p.hasLot;
+        if (missingCode || missingLot) needsInfoSet.add(m.conversation_id);
+      }
+    }
 
     const reminderIntents = { scheduled: [], reminder: [], supervisor: [] };
     await scheduleNewReminders(messages, reminderIntents);
-
     await checkReminders(messages, reminderIntents);
 
-    const intentsByConversationId = new Map();
+    const supervisorSet = new Set(reminderIntents.supervisor);
+    const reminderDueSet = new Set(reminderIntents.reminder.map(r => r.convId));
+    // threads Claude flagged as resolved -> a `complete` intent (for confirmation), which
+    // takes precedence over reminders/escalation
+    const completeSet = new Set();
 
-    for (const [convId, recipients] of forward) {
-      intentsByConversationId.set(convId, { intent: 'forward', interestedParty: recipients });
-    }
-    for (const [newConvId, originalConvId] of duplicate) {
-      const original = messages.find(m => m.conversation_id === originalConvId);
-      intentsByConversationId.set(newConvId, { intent: 'duplicate', interestedParty: original?.created ?? null });
-    }
-    for (const convId of complete) {
-      intentsByConversationId.set(convId, { intent: 'complete', interestedParty: null });
-    }
-    for (const { convId, date } of reminderIntents.scheduled) {
-      if (!intentsByConversationId.has(convId)) {
-        intentsByConversationId.set(convId, { intent: 'reminder_scheduled', interestedParty: date });
+    for (const m of messages) {
+      const convId = m.conversation_id;
+      const recipients = (m.intended_recipients ?? []).filter(Boolean);
+      const isDuplicate = m.duplicate_of !== null;
+      const flaggedComplete = m.flagged_complete === true;
+
+      // duplicate of an existing thread (can co-exist with a reminder if the thread has recipients)
+      if (isDuplicate) {
+        const original = messages.find(mm => mm.conversation_id === m.duplicate_of);
+        pushIntent(convId, { intent: 'duplicate', interestedParty: original?.created ?? null });
       }
+
+      // can't identify the property -> ask for it instead of routing blindly
+      if (needsInfoSet.has(convId)) {
+        pushIntent(convId, { intent: 'needs_info', interestedParty: null });
+      }
+
+      // forward only when there is actually a new recipient to forward to (fixes the
+      // "everything becomes a forward" default that produced spurious intents), and never
+      // when we're still waiting on the sender to identify the property (needs_info).
+      // Forwarding still composes with `complete` (forward-if-needed, then close).
+      else if (!m.forwarded && recipients.length && !isDuplicate) {
+        pushIntent(convId, { intent: 'forward', interestedParty: recipients });
+      }
+
+      // Claude flagged this thread as resolved -> surface a `complete` intent for confirmation.
+      // This is only a premature flag; the thread is finalized to status='complete' when the
+      // intent is executed.
+      if (flaggedComplete && !isDuplicate) {
+        pushIntent(convId, { intent: 'complete', interestedParty: null });
+        completeSet.add(convId);
+      }
+    }
+
+    // reminder-family intents. A thread being completed (or flagged complete) is never
+    // reminded or escalated. Supervisor escalation takes precedence over a nudge, and a due
+    // reminder takes precedence over first-scheduling.
+    for (const convId of reminderIntents.supervisor) {
+      const m = messages.find(mm => mm.conversation_id === convId);
+      if (!m || m.status === 'complete' || completeSet.has(convId)) continue;
+      pushIntent(convId, { intent: 'supervisor', interestedParty: null });
     }
     for (const { convId, date, nextIndex } of reminderIntents.reminder) {
-      if (!intentsByConversationId.has(convId)) {
-        intentsByConversationId.set(convId, { intent: 'reminder', interestedParty: date, nextIndex });
-      }
+      if (supervisorSet.has(convId) || needsInfoSet.has(convId) || completeSet.has(convId)) continue;
+      const m = messages.find(mm => mm.conversation_id === convId);
+      if (!m || m.status === 'complete') continue;
+      pushIntent(convId, { intent: 'reminder', interestedParty: date, nextIndex });
     }
-    for (const convId of reminderIntents.supervisor) {
-      intentsByConversationId.set(convId, { intent: 'supervisor', interestedParty: null });
+    for (const { convId, date } of reminderIntents.scheduled) {
+      if (supervisorSet.has(convId) || reminderDueSet.has(convId) || needsInfoSet.has(convId) || completeSet.has(convId)) continue;
+      const m = messages.find(mm => mm.conversation_id === convId);
+      if (!m || m.status === 'complete') continue;
+      pushIntent(convId, { intent: 'reminder_scheduled', interestedParty: date });
     }
 
-    console.log('[button3] final intents:', Object.fromEntries(intentsByConversationId));
-    return { messages, intents: Object.fromEntries(intentsByConversationId) };
+    const intents = Object.fromEntries(intentsByConversationId);
+    console.log('[button3] final intents:', intents);
+    return { messages, intents };
   } catch (err) {
     console.error(err);
     throw err;
@@ -412,8 +556,16 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
   const results = [];
 
   for (const m of selected) {
-    const entry = intents[m.conversation_id];
-    const intent = entry?.intent ?? null;
+    const entryList = intents[m.conversation_id] ?? [];
+    const findIntent = (name) => entryList.find(e => e.intent === name);
+    const duplicateIntent = findIntent('duplicate');
+    const forwardIntent = findIntent('forward');
+    const completeIntent = findIntent('complete');
+    const supervisorIntent = findIntent('supervisor');
+    const reminderIntent = findIntent('reminder');
+    const scheduledIntent = findIntent('reminder_scheduled');
+    const needsInfoIntent = findIntent('needs_info');
+    const intentLabel = entryList.map(e => e.intent).join(' + ') || '-';
     const actions = [];
 
     // previews or performs
@@ -440,12 +592,12 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
     };
 
     try {
-      if (!intent) {
-        actions.push({ label: 'No actionable intent', status: 'skipped' });
+      if (!entryList.length) {
+        actions.push({ label: 'No actionable intent (do nothing)', status: 'skipped' });
       }
 
       // duplicate thread
-      else if (intent === 'duplicate') {
+      else if (duplicateIntent) {
         const originalId = m.duplicate_of;
         const original = originalId ? byId.get(originalId) : null;
         const originalSender = original?.sender ?? null;
@@ -475,20 +627,32 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
       else {
         const recipients = (m.intended_recipients ?? []).filter(Boolean);
 
-        if (!m.forwarded && recipients.length) {
+        // don't forward while we're still waiting on the sender to identify the property
+        if (!needsInfoIntent && !m.forwarded && recipients.length) {
           await perform(`Forward thread to: ${recipients.join(', ')}`,
             () => forwardThreadAsync(m.id, recipients, ''));
           await perform(`Mark forwarded in DB`,
             () => pool.query(`UPDATE email SET forwarded=true WHERE conversation_id=$1`, [m.conversation_id]));
         }
 
-        if (intent === 'complete') {
+        // property/lot unclear -> reply asking for it, then archive until the sender responds
+        // (a reply re-surfaces the thread in the inbox and it gets re-classified)
+        if (needsInfoIntent) {
+          await perform(`Needs-info reply (${audienceLabel}): "${NEEDS_INFO_CONFIG.message}"`,
+            () => sendReply(NEEDS_INFO_CONFIG.message));
+          await perform(`Mark archived in DB (reopens on the sender's reply)`,
+            () => pool.query(`UPDATE email SET archived=true WHERE conversation_id=$1`, [m.conversation_id]));
+          await perform(`Archive thread in Outlook`,
+            () => archiveThreadAsync(m.conversation_id));
+        }
+
+        else if (completeIntent) {
           await completeThread();
         }
 
         // deadline passed -> send to supervisors. First gate on the LLM resolution check:
         // if the thread already reads as resolved, complete it instead.
-        else if (intent === 'supervisor') {
+        else if (supervisorIntent) {
           const resolved = await threadLooksResolved(m.body || '');
           actions.push({ label: `Resolution check -> ${resolved ? 'resolved' : 'not resolved'}`, status: 'done' });
 
@@ -513,15 +677,16 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
 
             await perform(`Reset reminder_date=NULL, reminder_count=0`,
               () => pool.query(`UPDATE recipients SET reminder_date=NULL, reminder_count=0 WHERE conversation_id=$1`, [m.conversation_id]));
-            await perform(`Mark archived in DB`,
-              () => pool.query(`UPDATE email SET archived=true WHERE conversation_id=$1`, [m.conversation_id]));
+            // once it's escalated it is out of the LLM's hands, so finalize it as complete
+            await perform(`Mark complete + archived in DB`,
+              () => pool.query(`UPDATE email SET status='complete', archived=true WHERE conversation_id=$1`, [m.conversation_id]));
             await perform(`Archive thread in Outlook (so it is not re-escalated)`,
               () => archiveThreadAsync(m.conversation_id));
           }
         }
 
-        else if (intent === 'reminder_scheduled') {
-          const date = entry.interestedParty;
+        else if (scheduledIntent) {
+          const date = scheduledIntent.interestedParty;
           await perform(`Set reminder_date = ${fmtDate(date)}`,
             () => pool.query(`UPDATE recipients SET reminder_date=$2 WHERE conversation_id=$1`, [m.conversation_id, new Date(date)]));
 
@@ -533,18 +698,18 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
         }
 
         // deadline passed, reminder due -> gate on the LLM resolution check:
-        // resolved => complete now, otherwise send the "Was the thread complete?" nudge and reschedule the next reminder
-        else if (intent === 'reminder') {
-          const date = entry.interestedParty;
-          const nextIndex = entry.nextIndex ?? null;
+        // resolved => complete now, otherwise send the nudge and reschedule the next reminder
+        else if (reminderIntent) {
+          const date = reminderIntent.interestedParty;
+          const nextIndex = reminderIntent.nextIndex ?? null;
           const resolved = await threadLooksResolved(m.body || '');
           actions.push({ label: `Resolution check -> ${resolved ? 'resolved' : 'not resolved'}`, status: 'done' });
 
           if (resolved) {
             await completeThread();
           } else {
-            await perform(`Reminder (${audienceLabel}): "${REMINDER_MESSAGE}"`,
-              () => sendReply(REMINDER_MESSAGE));
+            await perform(`Reminder (${audienceLabel}): "${REMINDER_MESSAGE( date? " This was due on " + date : "" )}"`,
+              () => sendReply(REMINDER_MESSAGE(date? " This was due on " + date : "" )));
             await perform(`Increment reminder_count, set next reminder_date=${fmtDate(date)}${nextIndex != null ? `, interval_index=${nextIndex}` : ''}`,
               () => pool.query(
                 `UPDATE recipients SET reminder_count = reminder_count + 1, reminder_date=$2, interval_index=COALESCE($3, interval_index) WHERE conversation_id=$1`,
@@ -554,7 +719,7 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
           }
         }
 
-        else if (intent === 'forward') {
+        else if (forwardIntent) {
           // forwarding already performed above, nothing else this run
           if (m.forwarded && !recipients.length) {
             actions.push({ label: 'Already forwarded; nothing else to do', status: 'skipped' });
@@ -570,7 +735,7 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
       conversationId: m.conversation_id,
       subject: m.subject,
       synopsis: m.synopsis,
-      intent: intent ?? '-',
+      intent: intentLabel,
       actions,
       status: hadError ? 'error' : (dryRun ? 'planned' : 'done'),
     });
@@ -622,15 +787,42 @@ export async function classification_to_email(LLM_output) {
 
 
 function parsePropertyPairs(codes, lots) {
+  const isPlaceholder = (s) => {
+    const t = String(s).trim().toLowerCase();
+    return t === '' || t === NO_CODE || t === NO_LOT;
+  };
   const pairs = [];
 
+  // explicit "CODE_LOT" entries from the lot array
   for (const entry of lots || []) {
-    const [prefix, lotNum] = entry.split('_');
+    const [prefix, lotNum] = String(entry).split('_');
     const code = prefix === 'none' ? NO_CODE : prefix;
     pairs.push({ code, lot: lotNum ?? NO_LOT });
   }
 
-  for (const code of codes || []) {
+  // The classifier is inconsistent about e.g. "BL 55" / "OM A44": sometimes the lot lands in
+  // the code array (code=["BL","55"] or ["OM","A44"]) instead of the lot array. Property codes
+  // are guaranteed to be in propertyToRegion.json, so any token that is NOT a real code is a
+  // stray lot. When there is exactly one real code, fold the stray lots onto it so all
+  // classifications normalize to the same (code, lot) pair -- otherwise duplicate detection
+  // misses them and needs_info fires incorrectly.
+  const rawCodes = (codes || []).map(c => String(c).trim()).filter(c => !isPlaceholder(c));
+  const realCodes = rawCodes.filter(isRealPropertyCode);
+  const strayLots = rawCodes.filter(c => !isRealPropertyCode(c));
+  const foldStrays = realCodes.length === 1 && strayLots.length > 0;
+
+  if (foldStrays) {
+    for (const lot of strayLots) {
+      if (!pairs.some(p => p.code === realCodes[0] && p.lot === lot)) {
+        pairs.push({ code: realCodes[0], lot });
+      }
+    }
+  }
+
+  // remaining bare codes: real codes always; stray tokens only when we couldn't fold them
+  // (ambiguous multi-code cases are left as-is rather than guessed)
+  const leftoverCodes = foldStrays ? realCodes : rawCodes;
+  for (const code of leftoverCodes) {
     if (!pairs.some(p => p.code === code)) {
       pairs.push({ code, lot: NO_LOT });
     }
@@ -745,11 +937,14 @@ export async function insertIntoDB(emails) {
         email.conversationId
       );
 
-      output.push({ conversationId: email.conversationId, updated: email.updated, classification, recipients, similar });
+      // never let a thread be a duplicate of itself (belt-and-suspenders on top of the SQL guard)
+      const duplicateOf = (similar && similar.conversation_id !== email.conversationId) ? similar : null;
 
-      if (similar) {
+      output.push({ conversationId: email.conversationId, updated: email.updated, classification, recipients, similar: duplicateOf });
+
+      if (duplicateOf) {
         email.status = 'complete';
-        email.forwarded = true; 
+        email.forwarded = true;
 
         await client.query(`
           INSERT INTO email (
@@ -767,15 +962,22 @@ export async function insertIntoDB(emails) {
           email.forwarded, email.updated, email.sender, email.subject,
           email.body, email.in_reply_to || null, classification.important.synopsis,
           classification.subject.main, classification.subject.sub,
-          similar.conversation_id
+          duplicateOf.conversation_id
         ]);
 
-        await client.query(`UPDATE email SET status = 'read' WHERE conversation_id = $1`, [similar.conversation_id]);
+        await client.query(`UPDATE email SET status = 'read' WHERE conversation_id = $1`, [duplicateOf.conversation_id]);
         continue;
       }
 
-      email.status = classification.important.completed ? 'complete' : 'read';
+      // Claude's "completed" is a PREMATURE flag only -- the thread stays 'read' and is
+      // surfaced as a `complete` intent for confirmation. It is only finalized to
+      // status='complete' when that intent is executed.
+      email.status = 'read';
+      email.flaggedComplete = !!classification.important.completed;
 
+      // Forwarding is unnecessary when the sender said so explicitly (LLM flag) or every
+      // routed recipient is already a party on the thread. (Completion no longer suppresses
+      // forwarding -- a completing thread should still make sure everyone is included first.)
       if (
         classification.important.forwardingNotNeeded ||
         recipients.every(([name, addr]) => party_included_list(email.all_parties, addr.toLowerCase()))
@@ -790,23 +992,26 @@ export async function insertIntoDB(emails) {
       await client.query(`
         INSERT INTO email (
           conversation_id, id, status, created, forwarded, updated,
-          sender, subject, body, in_reply_to, synopsis, subject_main, subject_sub, duplicate_of
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          sender, subject, body, in_reply_to, synopsis, subject_main, subject_sub, duplicate_of,
+          flagged_complete
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (conversation_id) DO UPDATE SET
           id = EXCLUDED.id, status = EXCLUDED.status, created = EXCLUDED.created,
           updated = EXCLUDED.updated, sender = EXCLUDED.sender, subject = EXCLUDED.subject,
           body = EXCLUDED.body, in_reply_to = EXCLUDED.in_reply_to, forwarded = EXCLUDED.forwarded,
           synopsis = EXCLUDED.synopsis, subject_main = EXCLUDED.subject_main,
           subject_sub = EXCLUDED.subject_sub, duplicate_of = EXCLUDED.duplicate_of,
+          flagged_complete = EXCLUDED.flagged_complete,
           archived = false
       `, [
         email.conversationId, email.id, email.status, email.created || null,
         email.forwarded ?? null, email.updated, email.sender, email.subject,
         email.body, email.in_reply_to || null, classification.important.synopsis,
-        classification.subject.main, classification.subject.sub, null
+        classification.subject.main, classification.subject.sub, null,
+        email.flaggedComplete ?? false
       ]);
 
-      if (!similar) {
+      if (!duplicateOf) {
         await upsertPropertyPairs(client, email.conversationId, classification.property.code, classification.property.lot);
 
         if (recipients.length > 0) {
@@ -909,6 +1114,7 @@ async function scheduleNewReminders(emails, intents) {
         conversation_id, reminder_type, target_date, assigned_date, last_response_date, interval_index
       FROM recipients
       WHERE reminder_date IS NULL
+        AND reminder_count <= 8
       ORDER BY conversation_id
     `);
     const byConv = new Map(result.rows.map(r => [r.conversation_id, r]));
@@ -932,12 +1138,18 @@ async function scheduleNewReminders(emails, intents) {
 export async function checkReminders(emails, intents) {
   const client = await pool.connect();
   try {
+    // A row is relevant if a reminder is actually due, OR it qualifies for escalation
+    // (too many reminders sent, or the hard deadline has passed). The reminder_count / deadline
+    // conditions are checked here directly so a high count with a NULL/future reminder_date
+    // still escalates -- previously such rows were never selected and got mis-treated as normal.
     const result = await client.query(`
       SELECT DISTINCT ON (conversation_id)
         conversation_id, reminder_count, reminder_type, target_date,
-        assigned_date, last_response_date, interval_index
+        assigned_date, last_response_date, interval_index, reminder_date
       FROM recipients
-      WHERE reminder_date IS NOT NULL AND reminder_date < NOW()
+      WHERE (reminder_date IS NOT NULL AND reminder_date < NOW())
+         OR reminder_count > 8
+         OR (target_date IS NOT NULL AND target_date < NOW())
       ORDER BY conversation_id
     `);
     const byConv = new Map(result.rows.map(r => [r.conversation_id, r]));
@@ -951,21 +1163,23 @@ export async function checkReminders(emails, intents) {
       const now = new Date();
       const pastTargetDate = config.completeByDate && row.target_date && now > new Date(row.target_date);
 
-
-      // instead of continuing reminders if past due date, escalate to supervisor. 
-      if (pastTargetDate) {
-        
+      // escalate to supervisors when the hard deadline has passed or too many reminders were
+      // sent (> 8). The "not flagged complete in any way" half of the condition is enforced in
+      // getReadEmailsWithIntents, which drops complete / flagged-complete threads from the
+      // supervisor list before the intent is emitted.
+      if (pastTargetDate || row.reminder_count > 8) {
         intents.supervisor.push(convId);
         continue;
       }
 
-      if (row.reminder_count < 8) {
-        const nextIndex = row.interval_index + 1;
-        const nextDate = getReminderDateForRecipient(row.reminder_type, row.target_date, { ...row, interval_index: nextIndex });
-        intents.reminder.push({ convId, date: nextDate, nextIndex });
-      } else {
-        intents.supervisor.push(convId);
-      }
+      // otherwise, only nudge if a reminder is genuinely due (the row may have been selected
+      // solely by the deadline clause with completeByDate off -> nothing to do)
+      const reminderDue = row.reminder_date && now > new Date(row.reminder_date);
+      if (!reminderDue) continue;
+
+      const nextIndex = row.interval_index + 1;
+      const nextDate = getReminderDateForRecipient(row.reminder_type, row.target_date, { ...row, interval_index: nextIndex });
+      intents.reminder.push({ convId, date: nextDate, nextIndex });
     }
   } finally {
     client.release();
