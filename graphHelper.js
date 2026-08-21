@@ -252,7 +252,15 @@ export async function getUniqueMessages(threadCount = 10) {
     const lastResponseDate = lastIncoming?.receivedDateTime ?? null;
 
     const fullBody = sorted.map(msg => {
-      const text = extractBodyTextWithCheerio(msg.uniqueBody?.content ?? '').join(" ");
+      // uniqueBody is only the text this message adds that's new to the conversation.
+      // For a plain forward with no added comment, Graph treats the ENTIRE forwarded
+      // chain as quoted history, so uniqueBody comes back empty and all the real content
+      // sits in body (inside a divRplyFwdMsg block). Fall back to the full body in that
+      // case so forwarded content isn't lost.
+      let text = extractBodyTextWithCheerio(msg.uniqueBody?.content ?? '').join(" ");
+      if (!text.trim()) {
+        text = extractBodyTextWithCheerio(msg.body?.content ?? '').join(" ");
+      }
       return `[${msg.receivedDateTime} - ${msg.from?.emailAddress?.address}]:\n${text}`;
     }).join('\n\n---\n\n');
 
@@ -318,11 +326,11 @@ export function extractBodyTextWithCheerio(htmlContent) {
 
   $('style').remove();
   $('script').remove();
-  $('[id*="Signature"]').remove();
-  $('[class*="Signature"]').remove();
-  $('[id*="divRplyFwdMsg"]').remove();
-  $('[class*="divRplyFwdMsg"]').remove();
-  $('hr').remove();
+  //$('[id*="Signature"]').remove();
+  //$('[class*="Signature"]').remove();
+  //$('[id*="divRplyFwdMsg"]').remove();
+  //$('[class*="divRplyFwdMsg"]').remove();
+  //$('hr').remove();   
 
   const full_text = $.text().trim()
   
@@ -375,6 +383,78 @@ export async function replyToThreadAsync(messageId, comment, toRecipients = null
     comment,
     message: { toRecipients: list },
   });
+}
+
+
+// Reply-all to a thread via a DRAFT, so we can adjust the recipient list (add routed parties,
+// drop unwanted addresses) and optionally carry the original file attachments over. A plain
+// replyAll can't exclude anyone and always strips attachments, which is why we go through a draft.
+//   add             - addresses to add to the To: line (e.g. newly routed parties)
+//   remove          - addresses to drop from To/CC (e.g. external sender, "remove me" requests)
+//   comment         - message text, prepended above the quoted thread
+//   copyAttachments - re-attach the original message's file attachments to the reply
+export async function replyAllDraft(messageId, { add = [], remove = [], comment = '', copyAttachments = false } = {}) {
+  if (!_userClient) {
+    throw new Error('Graph has not been initialized for user auth');
+  }
+
+  const removeSet = new Set(remove.filter(Boolean).map(a => String(a).toLowerCase()));
+  const addrOf = (r) => r?.emailAddress?.address?.toLowerCase();
+
+  // 1. create the reply-all draft (Graph pre-fills recipients + quoted body, excludes self)
+  const created = await _userClient.api(`/me/messages/${messageId}/createReplyAll`).post({});
+  const draft = await _userClient
+    .api(`/me/messages/${created.id}`)
+    .select(['id', 'toRecipients', 'ccRecipients', 'body'])
+    .get();
+
+  // 2. drop unwanted addresses, then add the new parties that aren't already present
+  const toRecipients = (draft.toRecipients ?? []).filter(r => !removeSet.has(addrOf(r)));
+  const ccRecipients = (draft.ccRecipients ?? []).filter(r => !removeSet.has(addrOf(r)));
+  const present = new Set([...toRecipients, ...ccRecipients].map(addrOf));
+  for (const a of add.filter(Boolean)) {
+    const low = String(a).toLowerCase();
+    if (!present.has(low) && !removeSet.has(low)) {
+      toRecipients.push({ emailAddress: { address: a } });
+      present.add(low);
+    }
+  }
+
+  // 3. patch recipients (+ prepend the comment to the quoted body)
+  const patch = { toRecipients, ccRecipients };
+  if (comment) {
+    const body = draft.body ?? { contentType: 'HTML', content: '' };
+    const isHtml = (body.contentType || 'HTML').toLowerCase() === 'html';
+    const prefix = isHtml ? `<p>${comment}</p>` : `${comment}\n\n`;
+    patch.body = { contentType: body.contentType || 'HTML', content: prefix + (body.content ?? '') };
+  }
+  await _userClient.api(`/me/messages/${draft.id}`).patch(patch);
+
+  // 4. carry over standard file attachments (replyAll would otherwise lose them)
+  if (copyAttachments) {
+    try {
+      const atts = await _userClient.api(`/me/messages/${messageId}/attachments`).get();
+      for (const att of atts.value ?? []) {
+        if (att['@odata.type'] === '#microsoft.graph.fileAttachment' && att.contentBytes) {
+          await _userClient.api(`/me/messages/${draft.id}/attachments`).post({
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: att.name,
+            contentType: att.contentType,
+            contentBytes: att.contentBytes,
+            isInline: !!att.isInline,
+          });
+        } else {
+          console.warn(`replyAllDraft: skipping non-file attachment "${att.name}" (${att['@odata.type']})`);
+        }
+      }
+    } catch (err) {
+      console.error('replyAllDraft: attachment copy failed:', err.message);
+    }
+  }
+
+  // 5. send it
+  await _userClient.api(`/me/messages/${draft.id}/send`).post({});
+  return draft.id;
 }
 
 

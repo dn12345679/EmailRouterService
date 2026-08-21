@@ -12,6 +12,9 @@
 
 <div class="scanlines" aria-hidden="true"></div>
 
+<!-- Error toasts (bottom of screen, auto-dismiss). Populated by showErrorToast() in app.js -->
+<div id="toast-stack" class="toast-stack" aria-live="assertive"></div>
+
 <!-- signin  -->
 <main id="signin-view" class  ="view">
   <div class="window">
@@ -46,12 +49,13 @@
   </div>
 </main>
 
-<!-- dashborad -->
+<!-- dashboard -->
 <main id="dashboard-view" class="view hidden">
+ <div class="shell" id="dashboard-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">email-router-test</p>
-      <h1 class="topbar-title">Console</h1>
+      <p class="eyebrow">email-router</p>
+      <h1 class="topbar-title">Main Console</h1>
     </div>
     <div class="signed-in-as">
       <span class="dot-status" aria-hidden="true"></span>
@@ -59,20 +63,11 @@
     </div>
   </header>
 
-
-
-
-  <section class="grid">
-
-    <!-- Job: List inbox -->
-    <article class="card big-card">
-      <div class="card-head">
-        <span class="job-index">01</span>
-        <h2>List inbox</h2>
-      </div>
-      <p class="card-desc">Pulls the most recent unique inbox threads.</p>
-      <div class="fetch-controls">
-        <label class="fetch-count-label">Threads
+  <!-- Outlook-style command ribbon -->
+  <div class="ribbon" role="toolbar" aria-label="Actions">
+    <div class="ribbon-group">
+      <div class="ribbon-row">
+        <label class="fetch-count-label">
           <select id="fetch-count" class="mini-select">
             <option value="1">1</option>
             <option value="10" selected>10</option>
@@ -82,38 +77,128 @@
           </select>
         </label>
         <input id="fetch-count-custom" class="mini-input hidden" type="number" min="1" max="500" placeholder="#" />
-        <button class="btn btn-primary run-btn" data-job="inbox">Run</button>
+        <button class="btn btn-primary run-btn ribbon-btn" data-job="inbox">Run</button>
       </div>
-      <div class="output" data-output="inbox"></div>
-    </article>
+      <span class="ribbon-label">Fetch inbox</span>
+    </div>
 
+    <div class="ribbon-divider" aria-hidden="true"></div>
 
-    <!--  -->
-    <article class="card">
-      <div class="card-head">
-        <h2>Jobs</h2>
+    <div class="ribbon-group">
+      <div class="ribbon-row">
+        <button class="btn btn-secondary run-btn ribbon-btn" data-job="classify-selected">Classify</button>
+        <button class="btn btn-secondary run-btn ribbon-btn" data-job="group-selected">Check intents</button>
       </div>
-      <p class="card-desc">Step by Step email-classification handling</p>
+      <span class="ribbon-label">Process</span>
+    </div>
 
-      <button class="btn btn-secondary run-btn" data-job="classify-selected">Classify Collected</button>
-      <button class="btn btn-secondary run-btn" data-job="group-selected">Check All Intents</button> <!-- duplicates, send/set reminders, check thread updates, -->
-      <button class="btn btn-primary run-btn" data-job="submit-selected">Submit and Save</button>
-      <p class="card-desc" id="submit-hint">Tick the emails in the intents table above, then Submit to preview the actions before anything is sent.</p>
-      <div class="output" data-output="classify-selected" type="status-node-classification"></div>
-      <div class="output" data-output="group-selected" type="status-node-group-selected"></div>
-      <div class="output" data-output="submit-selected" type="status-node-submit-selected"></div>
+    <div class="ribbon-divider" aria-hidden="true"></div>
 
-      <!-- Inspect: paste conversation IDs to dump their full DB state -->
-      <div class="inspect-box">
-        <h3 class="inspect-title">Inspect by conversation ID</h3>
-        <p class="card-desc">Paste one or more conversation IDs (comma or newline separated) to see the stored email, property, recipient, and intent data.</p>
-        <textarea id="inspect-ids" class="mono-input inspect-input" rows="2" placeholder="AAQkADQz..., AAQkADQz..."></textarea>
-        <button class="btn btn-secondary run-btn" data-job="inspect">Inspect</button>
-        <div class="output" data-output="inspect"></div>
+    <div class="ribbon-group">
+      <div class="ribbon-row">
+        <button class="btn btn-primary run-btn ribbon-btn" data-job="submit-selected">Submit &amp; Save</button>
       </div>
-    </article>
+      <span class="ribbon-label">Execute</span>
+    </div>
 
+    <div class="ribbon-divider" aria-hidden="true"></div>
+
+    <div class="ribbon-group">
+      <div class="ribbon-row">
+        <button class="btn btn-ghost ribbon-btn" id="toggle-inspect" type="button" aria-expanded="false">Inspect</button>
+      </div>
+      <span class="ribbon-label">Tools</span>
+    </div>
+
+    <div class="ribbon-status">
+      <div class="output status-out" data-output="classify-selected" type="status-node-classification"></div>
+      <div class="output status-out" data-output="group-selected" type="status-node-group-selected"></div>
+    </div>
+  </div>
+
+  <!-- Search / filter bar -->
+  <div class="searchbar" role="search">
+    <div class="search-field search-grow">
+      <span class="search-icon" aria-hidden="true">⌕</span>
+      <input id="search-keyword" type="search" placeholder="Search subject, synopsis, topic…" aria-label="Keyword search" />
+    </div>
+    <div class="search-field">
+      <span class="search-icon" aria-hidden="true">@</span>
+      <input id="search-party" type="search" placeholder="Involved party (name or email)" aria-label="Filter by involved party" />
+    </div>
+    <label class="search-date">Intent
+      <select id="search-intent" class="mini-select search-select" aria-label="Filter by intent">
+        <option value="">All</option>
+        <option value="forward">forward</option>
+        <option value="duplicate">duplicate</option>
+        <option value="complete">complete</option>
+        <option value="needs_info">needs_info</option>
+        <option value="unclassifiable">unclassifiable</option>
+        <option value="reminder_scheduled">reminder_scheduled</option>
+        <option value="reminder">reminder</option>
+        <option value="supervisor">supervisor</option>
+        <option value="__none__">(no intent)</option>
+      </select>
+    </label>
+    <!-- only meaningful once "Check intents" has run; hidden otherwise -->
+    <label class="search-date hidden" id="group-by-wrap">Group by
+      <select id="group-by-select" class="mini-select search-select" aria-label="Group intents by">
+        <option value="date-desc">Date received (newest)</option>
+        <option value="date-asc">Date received (oldest)</option>
+        <option value="intent">Intent type</option>
+      </select>
+    </label>
+    <label class="search-date">Due from
+      <input id="search-due-from" type="date" aria-label="Due date from" />
+    </label>
+    <label class="search-date">to
+      <input id="search-due-to" type="date" aria-label="Due date to" />
+    </label>
+    <button id="search-clear" class="btn btn-ghost btn-small" type="button">Clear</button>
+    <span id="search-summary" class="search-summary" aria-live="polite"></span>
+  </div>
+
+  <!-- main workspace: inbox / classified / intents render here -->
+  <section class="workspace">
+    <p class="workspace-hint" id="submit-hint">Run <strong>Fetch inbox</strong>, then <strong>Classify</strong> and <strong>Check intents</strong>. Tick the rows you want and <strong>Submit &amp; Save</strong> to preview actions before anything is sent. Click a row to preview the thread.</p>
+    <!-- pager lives above the (horizontally-scrollable) table, in its own element, so paging is
+         always visible and never scrolls away with the table content -->
+    <div class="pager-slot" id="pager-slot"></div>
+    <!-- click a row to open the reading pane: list-pane shrinks, reading-pane slides in -->
+    <div class="workspace-split" id="workspace-split">
+      <div class="list-pane" id="list-pane">
+        <div class="output main-output" data-output="inbox"></div>
+      </div>
+      <aside class="reading-pane" id="reading-pane" aria-hidden="true"></aside>
+    </div>
   </section>
+
+ </div>
+
+  <!-- Inspect modal (opened from the ribbon; darkens the background) -->
+  <div class="modal-overlay hidden" id="inspect-overlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="inspect-modal-title">
+      <div class="modal-head">
+        <h3 class="inspect-title" id="inspect-modal-title">Inspect by conversation ID</h3>
+        <button class="modal-close" id="inspect-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <p class="card-desc">Paste one or more conversation IDs (comma or newline separated) to see the stored email, property, recipient, and intent data.</p>
+      <textarea id="inspect-ids" class="mono-input inspect-input" rows="3" placeholder="AAQkADQz..., AAQkADQz..."></textarea>
+      <button class="btn btn-secondary run-btn" data-job="inspect">Inspect</button>
+      <div class="output" data-output="inspect"></div>
+    </div>
+  </div>
+
+  <!-- Submit & Save preview/confirm modal (opened by the Execute button in the ribbon) -->
+  <div class="modal-overlay hidden" id="execute-overlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="execute-modal-title">
+      <div class="modal-head">
+        <h3 class="inspect-title" id="execute-modal-title">Review actions</h3>
+        <button class="modal-close" id="execute-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="output" data-output="submit-selected" type="status-node-submit-selected"></div>
+    </div>
+  </div>
 </main>
 
 <script src="app.js"></script>

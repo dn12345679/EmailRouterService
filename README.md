@@ -5,8 +5,9 @@ An app that classifies emails with claude and performs actions like scheduling a
 **Classify Collected** (`insertIntoDB`)
 Pulls unique inbox threads, classifies each with Claude (subject bucket,
 conditions, property/lot, synopsis, completion, reminder type, deadline), routes
-it to the right people via `ROUTING_CONFIG`, detects likely duplicates by
-synopsis similarity, and upserts everything. 
+it to the right people via `ROUTING_CONFIG`, detects likely duplicates (same
+sender + property/lot + topic, confirmed by synopsis similarity), and upserts
+everything. 
 
 **Check All Intents** (`getReadEmailsWithIntents`)
 Reads back the non-archived threads and computes the applicable intents per
@@ -28,14 +29,16 @@ category decides how they combine and in what order they run:
 | Category | Intents | Behavior |
 |---|---|---|
 | **Pre-filter** (not intents) | ignored sender, archived | dropped before any intent logic runs |
-| **Gate Step** | `duplicate`, `needs_info` | exclusive and terminal |
-| **Preparation Step** | `forward` | attaches in front of a **Lifecycle** action (does not stop the thread) |
+| **Gate Step** | `duplicate` | exclusive and terminal |
+| **Preparation Step** | `forward`, `needs_info` | attach in front of a **Lifecycle** action (do not stop the thread) |
 | **Lifecycle Step** (pick exactly one) | `complete`, `supervisor` (escalate), `reminder` (send), `reminder_scheduled` (set) | mutually exclusive states of the thread |
 | **Default** | `none` | do nothing |
 
-Intent order of operation: `duplicate` -> `needs_info` ->
-`forward` (composable) -> one of `complete` / `supervisor` / `reminder` /
-`reminder_scheduled` -> `none`.
+Intent order of operation: `duplicate` (terminal) -> `forward` + `needs_info`
+(composable prep) -> one of `complete` / `supervisor` / `reminder` /
+`reminder_scheduled` -> `none`. A `needs_info` thread is still routed and still
+runs the reminder/lifecycle flow; the only extra action is the reply asking the
+sender to identify the property.
 
 - **duplicate** - closes the duplicate thread, folds it into the original
   sender, archives both, marks the duplicate complete. Duplicates are always
@@ -55,9 +58,11 @@ Intent order of operation: `duplicate` -> `needs_info` ->
 - **reminder_scheduled** - sets the first reminder date and archives the Outlook
   message (kept checkable in the DB).
 - **needs_info** - Claude couldn't identify the property code and/or lot (and the
-  thread isn't Misc, a duplicate, or already forwarded), so instead of routing it
-  blindly it replies asking the sender to specify the Property Code and Lot
-  number, then archives until they reply.
+  thread isn't Misc, a duplicate, or already forwarded). The thread is **still
+  routed and reminded normally** -- routing rarely depends on the property/lot --
+  and this just adds one extra reply to the original sender asking them to specify
+  the Property Code and Lot number. Because it only fires while the thread is
+  un-forwarded, the sender is asked once.
 - **none** - nothing to do; the thread is left untouched.
 
 ### Sender handling (internal vs. 3rd-party)
@@ -72,6 +77,13 @@ whether the thread is currently in the inbox, so a thread keeps getting nudged
 even after it's archived out of Outlook, and it does not depend on anyone
 replying. A brand-new thread is first scheduled (`reminder_scheduled`), then
 fires on a later run once `reminder_date` has passed (`reminder`).
+
+Reminder dates are anchored to when the email was **received**
+(`assigned_date = email.created`), not the current time, so historical emails get
+historically-correct dates. (Consequence: backfilling old emails makes their
+reminders immediately past-due.) If a thread later turns out to be a duplicate,
+its own reminder is dropped, but the original **adopts the duplicate's hard
+deadline if it is sooner** (tighter `target_date` + reminder type, rescheduled).
 
 `last_response_date` is refreshed on every re-collection to the newest message
 that isn't from the mailbox, so `last_response` reminder types
@@ -117,7 +129,8 @@ CREATE TABLE email (
   subject_main    TEXT,
   subject_sub     TEXT,
   archived        BOOLEAN NOT NULL DEFAULT FALSE,
-  flagged_complete BOOLEAN NOT NULL DEFAULT FALSE  -- Claude flagged it resolved; surfaced as a `complete` intent, finalized on execute
+  flagged_complete BOOLEAN NOT NULL DEFAULT FALSE,  -- Claude flagged it resolved; surfaced as a `complete` intent, finalized on execute
+  remove_from_thread TEXT[] NOT NULL DEFAULT '{}'   -- addresses that asked out; trimmed from reply-all recipients
 );
 
 CREATE INDEX idx_email_archived ON email (archived);

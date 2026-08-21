@@ -31,6 +31,16 @@ export const DEFAULT_REMINDER_CONFIG = {
     interval_days: 7,
     stopWhen: "complete",
   },
+  // Contentless / image-only forwards that couldn't be classified. There's no deadline, so we
+  // nudge the sender for context on a fixed cadence and escalate to Supervisors after a few
+  // unanswered nudges (see escalateAfterReminders).
+  "Unclassifiable": {
+    mode: "repeat",
+    anchor: "assigned",
+    interval_days: 3,
+    stopWhen: "complete",
+    escalateAfterReminders: 3,   // escalate to Supervisors once this many nudges go unanswered
+  },
 };
 
 export const DEFAULT_NEEDS_INFO_CONFIG = {
@@ -44,6 +54,17 @@ export const DEFAULT_NEEDS_INFO_CONFIG = {
     "Thank you for your inquiry, but would you be able to specify the Property Code and Lot number for identification?",
 };
 
+export const DEFAULT_UNCLASSIFIABLE_CONFIG = {
+  enabled: true,
+  // A forwarded image / contentless thread: too little text to discern a topic AND no
+  // property/lot found. Full parsed chain shorter than maxChars (with no code/lot) is treated
+  // as unclassifiable and routed to the "ask the sender for context" flow instead of a bucket.
+  maxChars: 50,
+  reminderType: "Unclassifiable",
+  message:
+    "Context not found. Please reply with the subject, property, and lot so this can be routed.",
+};
+
 export class RouterConfig {
   constructor() {
     this.SUBJECT_BUCKETS = null;
@@ -51,6 +72,7 @@ export class RouterConfig {
     this.ROUTING_CONFIG = null;
     this.REMINDER_CONFIG = DEFAULT_REMINDER_CONFIG;
     this.NEEDS_INFO_CONFIG = DEFAULT_NEEDS_INFO_CONFIG;
+    this.UNCLASSIFIABLE_CONFIG = DEFAULT_UNCLASSIFIABLE_CONFIG;
     this.REMOVE_SENDER_ON_ESCALATION = true;
   }
 
