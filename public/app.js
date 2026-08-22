@@ -30,6 +30,13 @@ let currentRowIndex = new Map();
 // signed-in mailbox address, used only to decide which side a bubble renders on
 let signedInEmail = null;
 
+// --- Modify Intent popup state ---
+// { conversationId, subject, rows, originalRows } while the popup is open, else null. Each row:
+// { id, kind: 'forward'|'complete'|'duplicate'|'reminder'|'readonly', intentName, target, editable, isNew }
+let modifyIntentState = null;
+// [{ name, email }, ...] from ROUTING_CONFIG, fetched once and cached for the forward-target dropdown
+let routingConfigCache = null;
+
 function isDateLike(v) {
   return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) && !isNaN(Date.parse(v));
 }
@@ -372,12 +379,12 @@ function outputEl(job) {
 }
 
 function setLoading(btn, out, label) {
-  return; // NOTE: im hiding this for now since it makes the UI a lil ugly
+// NOTE: im hiding this for now since it makes the UI a lil ugly
 
   if (btn) { btn.disabled = true; btn.dataset.originalText = btn.textContent; btn.textContent = label; }
   out.classList.remove('err');
 
-  
+  return;
   out.innerHTML = `<span class="ok-line">${label}</span>`;
 }
 
@@ -464,10 +471,10 @@ function cleanExtractedText(text) {
 // classify-result entry + its source message, or a DB row from the intents query). Each
 // render*() normalizes its rows to this common shape so the pane renderer doesn't need to know
 // which view it came from.
-function toPaneRecord({ convId, subject, sender, updated, synopsis, topic, recipients, body, intentList }) {
+function toPaneRecord({ convId, subject, sender, updated, synopsis, topic, recipients, body, intentList, isIntentsView }) {
   return {
     convId, subject, sender, updated, synopsis: synopsis || null, topic: topic || null,
-    recipients: recipients || null, body, intentList: intentList || [],
+    recipients: recipients || null, body, intentList: intentList || [], isIntentsView: !!isIntentsView,
   };
 }
 
@@ -517,6 +524,12 @@ function renderReadingPaneContent(record) {
        </label>`
     : '';
 
+  // only meaningful on the intents view -- forward/complete/duplicate/reminder intents are
+  // computed there, so editing them elsewhere (inbox/classified) wouldn't have anything to show
+  const modifyIntentBtn = record.isIntentsView
+    ? `<button type="button" id="modify-intent-btn" class="btn btn-secondary btn-small reading-pane-modify-btn">Modify Intent</button>`
+    : '';
+
   // rebuilding the whole subtree (rather than patching in place) is what makes pane-slide-in
   // replay on every selection change, including switching directly between two threads
   pane.innerHTML = `
@@ -527,6 +540,7 @@ function renderReadingPaneContent(record) {
           <div class="reading-pane-meta">${escapeHTML(record.sender || '—')} · ${record.updated ? new Date(record.updated).toLocaleString() : '—'}</div>
           ${topicLine}${synopsisLine}${recipientsLine}
           ${selectToggle}
+          ${modifyIntentBtn}
         </div>
         <button class="reading-pane-close" type="button" aria-label="Close preview">&times;</button>
       </div>
@@ -537,6 +551,290 @@ function renderReadingPaneContent(record) {
   pane.querySelector('#reading-pane-select')?.addEventListener('change', (e) => {
     toggleIntentSelection(record.convId, e.target.checked);
   });
+  pane.querySelector('#modify-intent-btn')?.addEventListener('click', () => openModifyIntent(record));
+}
+
+// --- Modify Intent popup ---
+//
+// Lets the user manually add/edit/delete a thread's computed intents. Four of the eight intent
+// types each map to exactly one real DB column/table that getReadEmailsWithIntents() and
+// executeIntents() already read (recipients rows for forward, email.flagged_complete for
+// complete, email.duplicate_of for duplicate, recipients.reminder_date for reminder /
+// reminder_scheduled) -- see dbManager.js's modifyIntent(). supervisor/needs_info/unclassifiable
+// are recomputed from multi-factor logic with no single backing flag, so they're shown read-only.
+
+async function ensureRoutingConfig() {
+  if (routingConfigCache) return routingConfigCache;
+  try {
+    routingConfigCache = await fetchJSON('/api/routing-config');
+  } catch {
+    routingConfigCache = [];
+  }
+  return routingConfigCache;
+}
+
+// datetime-local inputs want "YYYY-MM-DDTHH:mm" in the viewer's local time, no timezone/seconds
+function toDatetimeLocalValue(v) {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+let modifyIntentRowSeq = 0;
+function nextModifyIntentRowId() {
+  return `mi-row-${Date.now()}-${modifyIntentRowSeq++}`;
+}
+
+// Expands intentList into one editable/read-only row per (intent, individual target) pair --
+// e.g. a 'forward' entry with 3 recipients becomes 3 separate rows, matching how the popup is
+// meant to display multiple targets for one intent as separate lines.
+function buildModifyIntentRows(intentList) {
+  const rows = [];
+  for (const entry of intentList) {
+    if (entry.intent === 'forward') {
+      const targets = Array.isArray(entry.interestedParty) ? entry.interestedParty : [entry.interestedParty].filter(Boolean);
+      for (const t of targets) {
+        rows.push({ id: nextModifyIntentRowId(), kind: 'forward', intentName: 'forward', target: t, editable: true, isNew: false });
+      }
+    } else if (entry.intent === 'complete') {
+      rows.push({ id: nextModifyIntentRowId(), kind: 'complete', intentName: 'complete', target: null, editable: false, isNew: false });
+    } else if (entry.intent === 'duplicate') {
+      rows.push({ id: nextModifyIntentRowId(), kind: 'duplicate', intentName: 'duplicate', target: entry.interestedParty ?? null, editable: false, isNew: false });
+    } else if (entry.intent === 'reminder' || entry.intent === 'reminder_scheduled') {
+      rows.push({ id: nextModifyIntentRowId(), kind: 'reminder', intentName: entry.intent, target: entry.interestedParty ?? null, editable: true, isNew: false });
+    } else {
+      // supervisor / needs_info / unclassifiable -- read-only, no single backing flag to flip
+      rows.push({ id: nextModifyIntentRowId(), kind: 'readonly', intentName: entry.intent, target: entry.interestedParty ?? null, editable: false, isNew: false });
+    }
+  }
+  return rows;
+}
+
+async function openModifyIntent(record) {
+  modifyIntentState = {
+    conversationId: record.convId,
+    subject: record.subject,
+    rows: buildModifyIntentRows(record.intentList),
+  };
+  modifyIntentState.originalRows = modifyIntentState.rows.map((r) => ({ ...r }));
+
+  renderModifyIntentBody();
+  modifyIntentModal.open();
+
+  // the forward-target dropdown needs the routing config; fetch lazily and refresh once loaded
+  // (harmless if the user has already closed the popup or moved on by the time this resolves)
+  await ensureRoutingConfig();
+  if (modifyIntentState?.conversationId === record.convId && modifyIntentModal.isOpen()) {
+    renderModifyIntentBody();
+  }
+}
+
+function renderModifyIntentAddTarget() {
+  const wrap = document.getElementById('mi-add-target-wrap');
+  const type = document.getElementById('mi-add-type')?.value;
+  if (!wrap) return;
+
+  if (type === 'forward') {
+    if (routingConfigCache && routingConfigCache.length) {
+      const options = routingConfigCache
+        .map((p) => `<option value="${escapeHTML(p.email)}">${escapeHTML(p.name)} (${escapeHTML(p.email)})</option>`)
+        .join('');
+      wrap.innerHTML = `
+        <select id="mi-add-forward-select" class="mini-select">
+          ${options}
+          <option value="__other__">Other…</option>
+        </select>
+        <input id="mi-add-forward-other" class="mono-input hidden" type="text" placeholder="name@example.com" />
+      `;
+      wrap.querySelector('#mi-add-forward-select')?.addEventListener('change', (e) => {
+        wrap.querySelector('#mi-add-forward-other')?.classList.toggle('hidden', e.target.value !== '__other__');
+      });
+    } else {
+      wrap.innerHTML = `<input id="mi-add-forward-other" class="mono-input" type="text" placeholder="name@example.com" />`;
+    }
+  } else if (type === 'reminder') {
+    wrap.innerHTML = `<input id="mi-add-reminder-date" class="mono-input" type="datetime-local" />`;
+  } else {
+    wrap.innerHTML = '';
+  }
+}
+
+function addModifyIntentRow() {
+  const type = document.getElementById('mi-add-type')?.value;
+
+  if (type === 'forward') {
+    const sel = document.getElementById('mi-add-forward-select');
+    const other = document.getElementById('mi-add-forward-other');
+    const email = (sel && sel.value !== '__other__' ? sel.value : (other?.value || '')).trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showErrorToast('Enter a valid email address to forward to.');
+      return;
+    }
+    if (modifyIntentState.rows.some((r) => r.kind === 'forward' && r.target.toLowerCase() === email.toLowerCase())) {
+      showErrorToast('That address is already listed.');
+      return;
+    }
+    modifyIntentState.rows.push({ id: nextModifyIntentRowId(), kind: 'forward', intentName: 'forward', target: email, editable: true, isNew: true });
+  } else if (type === 'complete') {
+    modifyIntentState.rows.push({ id: nextModifyIntentRowId(), kind: 'complete', intentName: 'complete', target: null, editable: false, isNew: true });
+  } else if (type === 'reminder') {
+    const val = document.getElementById('mi-add-reminder-date')?.value;
+    if (!val) {
+      showErrorToast('Pick a reminder date first.');
+      return;
+    }
+    modifyIntentState.rows.push({ id: nextModifyIntentRowId(), kind: 'reminder', intentName: 'reminder_scheduled', target: val, editable: true, isNew: true });
+  }
+
+  renderModifyIntentBody();
+}
+
+function renderModifyIntentBody() {
+  const out = document.querySelector('[data-output="modify-intent"]');
+  if (!out || !modifyIntentState) return;
+  const { rows, subject } = modifyIntentState;
+
+  const rowMarkup = (row) => {
+    let targetCell;
+    if (row.kind === 'forward') {
+      targetCell = `<input type="text" class="mono-input mi-target-input" data-row-id="${row.id}" value="${escapeHTML(row.target || '')}" placeholder="name@example.com" />`;
+    } else if (row.kind === 'reminder') {
+      targetCell = `<input type="datetime-local" class="mono-input mi-target-input" data-row-id="${row.id}" value="${toDatetimeLocalValue(row.target)}" />`;
+    } else if (row.kind === 'duplicate') {
+      targetCell = `<span>${formatInterestedParty(row.target)}</span>`;
+    } else {
+      targetCell = '<span>—</span>';
+    }
+    return `<tr data-row-id="${row.id}">
+      <td><span class="chip">${escapeHTML(row.intentName)}</span></td>
+      <td>${targetCell}</td>
+      <td><button type="button" class="btn btn-ghost btn-small mi-delete-btn" data-row-id="${row.id}">Remove</button></td>
+    </tr>`;
+  };
+
+  const editableRows = rows.filter((r) => r.kind !== 'readonly');
+  const readonlyRows = rows.filter((r) => r.kind === 'readonly');
+
+  const hasComplete = rows.some((r) => r.kind === 'complete');
+  const hasReminder = rows.some((r) => r.kind === 'reminder');
+  const addOptions = [
+    '<option value="forward">forward</option>',
+    !hasComplete ? '<option value="complete">complete</option>' : '',
+    !hasReminder ? '<option value="reminder">reminder date</option>' : '',
+  ].filter(Boolean).join('');
+
+  out.innerHTML = `
+    <p class="card-desc">Editing <strong>${escapeHTML(subject || '(no subject)')}</strong> — changes apply to the database once you click Save changes.</p>
+    <table class="mi-table">
+      <thead><tr><th>Intent</th><th>Target</th><th></th></tr></thead>
+      <tbody>${editableRows.map(rowMarkup).join('') || '<tr><td colspan="3"><em>No editable intents yet.</em></td></tr>'}</tbody>
+    </table>
+    <div class="mi-add-row">
+      <select id="mi-add-type" class="mini-select">${addOptions}</select>
+      <span id="mi-add-target-wrap"></span>
+      <button type="button" id="mi-add-btn" class="btn btn-secondary btn-small">Add</button>
+    </div>
+    ${readonlyRows.length ? `
+      <div class="mi-readonly">
+        <p class="card-desc">Also computed for this thread (not editable here):</p>
+        <ul class="mi-readonly-list">
+          ${readonlyRows.map((r) => `<li><span class="chip">${escapeHTML(r.intentName)}</span> ${r.target != null ? formatInterestedParty(r.target) : ''}</li>`).join('')}
+        </ul>
+      </div>` : ''}
+    <p class="card-desc mi-caveat">Clearing a duplicate marking does not restore the original recipients/property data — add a forward target manually, or re-run Classify, if you want it routed again. Deleting a reminder just clears the pending date; the normal cadence proposes a fresh one on the next Check Intents run.</p>
+    <div class="modal-actions">
+      <button type="button" id="mi-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button type="button" id="mi-save-btn" class="btn btn-primary">Save changes</button>
+    </div>
+  `;
+
+  renderModifyIntentAddTarget();
+
+  out.querySelectorAll('.mi-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      modifyIntentState.rows = modifyIntentState.rows.filter((r) => r.id !== btn.dataset.rowId);
+      renderModifyIntentBody();
+    });
+  });
+  out.querySelectorAll('.mi-target-input').forEach((input) => {
+    input.addEventListener('change', () => {
+      const row = modifyIntentState.rows.find((r) => r.id === input.dataset.rowId);
+      if (row) row.target = input.value;
+    });
+  });
+  out.querySelector('#mi-add-type')?.addEventListener('change', renderModifyIntentAddTarget);
+  out.querySelector('#mi-add-btn')?.addEventListener('click', addModifyIntentRow);
+  out.querySelector('#mi-cancel-btn')?.addEventListener('click', () => modifyIntentModal.close());
+  out.querySelector('#mi-save-btn')?.addEventListener('click', saveModifyIntent);
+}
+
+// Diffs the edited rows against the snapshot taken when the popup opened. Editing a forward/
+// reminder row's target in place naturally falls out of this as "remove old + add new" without
+// needing a distinct "modify" op.
+function computeModifyIntentChanges() {
+  const { rows, originalRows } = modifyIntentState;
+
+  const origForward = new Set(originalRows.filter((r) => r.kind === 'forward').map((r) => r.target.toLowerCase()));
+  const finalForward = new Set(rows.filter((r) => r.kind === 'forward').map((r) => r.target.toLowerCase()));
+  const changes = {
+    forwardAdd: [...finalForward].filter((t) => !origForward.has(t)),
+    forwardRemove: [...origForward].filter((t) => !finalForward.has(t)),
+    complete: rows.some((r) => r.kind === 'complete'),
+  };
+
+  const hadDuplicate = originalRows.some((r) => r.kind === 'duplicate');
+  const hasDuplicate = rows.some((r) => r.kind === 'duplicate');
+  if (hadDuplicate && !hasDuplicate) changes.clearDuplicate = true;
+
+  const reminderRow = rows.find((r) => r.kind === 'reminder');
+  const hadReminder = originalRows.some((r) => r.kind === 'reminder');
+  if (reminderRow) {
+    const d = new Date(reminderRow.target);
+    if (!isNaN(d.getTime())) changes.reminderDate = d.toISOString();
+  } else if (hadReminder) {
+    changes.resetReminder = true;
+  }
+
+  return changes;
+}
+
+// Merges the server's freshly-recomputed {message, intentList} for this one thread back into the
+// live intents-view state, so the table/reading pane reflect the save without a full "Check
+// intents" round-trip -- same idea as removeExecutedThreadsFromView() below.
+function mergeModifyIntentResult(conversationId, { message, intentList }) {
+  if (!lastIntentsItems) return;
+  intents[conversationId] = intentList ?? [];
+  lastIntentsItems.intents[conversationId] = intentList ?? [];
+  if (message) {
+    const idx = lastIntentsItems.messages.findIndex((m) => m.conversation_id === conversationId);
+    if (idx !== -1) lastIntentsItems.messages[idx] = message;
+  }
+
+  const out = outputEl('inbox');
+  if (out) renderIntentsList(out, lastIntentsItems, intentPage);
+}
+
+async function saveModifyIntent() {
+  if (!modifyIntentState) return;
+  const conversationId = modifyIntentState.conversationId;
+  const changes = computeModifyIntentChanges();
+  const btn = document.getElementById('mi-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+  try {
+    const result = await fetchJSON('/api/modify-intent', {
+      method: 'POST',
+      body: JSON.stringify({ conversationId, changes }),
+    });
+    modifyIntentState = null;
+    modifyIntentModal.close();
+    mergeModifyIntentResult(conversationId, result);
+  } catch (err) {
+    showErrorToast(err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
 }
 
 // Applies current selection/open state to the DOM: toggles the split layout, (re)renders the
@@ -848,7 +1146,7 @@ function renderIntentsList(out, items, page = 0) {
     return [m.conversation_id, toPaneRecord({
       convId: m.conversation_id, subject: m.subject, sender: m.sender, updated: m.updated,
       synopsis: m.synopsis, topic, recipients: m.intended_recipients, body: m.body,
-      intentList: intents[m.conversation_id] ?? [],
+      intentList: intents[m.conversation_id] ?? [], isIntentsView: true,
     })];
   }));
   syncReadingPane();
@@ -1163,7 +1461,7 @@ function wireSearch() {
 // Generic controller for a `.modal-overlay` / `.modal` pair: open/close with the enter/exit
 // animation (matching the .closing keyframes in style.css) and backdrop-click-to-close. Returns
 // isOpen() so a shared Escape-key handler can close whichever modal is topmost.
-function createModal(overlayId, { openBtnId, closeBtnId, onOpen } = {}) {
+function createModal(overlayId, { openBtnId, closeBtnId, onOpen, onClose } = {}) {
   const overlay = document.getElementById(overlayId);
   const openBtn = openBtnId ? document.getElementById(openBtnId) : null;
   const closeBtn = closeBtnId ? document.getElementById(closeBtnId) : overlay?.querySelector('.modal-close');
@@ -1185,6 +1483,7 @@ function createModal(overlayId, { openBtnId, closeBtnId, onOpen } = {}) {
   // animationend would never fire, which would leave the modal stuck open.
   const close = () => {
     if (overlay.classList.contains('hidden') || overlay.classList.contains('closing')) return;
+    onClose?.();
     overlay.classList.add('closing');
     openBtn?.setAttribute('aria-expanded', 'false');
     closeTimer = setTimeout(() => {
@@ -1207,11 +1506,20 @@ const inspectModal = createModal('inspect-overlay', {
   onOpen: () => document.getElementById('inspect-ids')?.focus(),
 });
 const executeModal = createModal('execute-overlay', { closeBtnId: 'execute-close' });
+// opened programmatically from the reading pane's "Modify Intent" button (see openModifyIntent),
+// not from a static ribbon/toolbar button -- hence no openBtnId here. onClose covers every way
+// the modal can go away (Cancel button, backdrop click, Escape, the × button) so unsaved edits
+// are always discarded.
+const modifyIntentModal = createModal('modify-intent-overlay', {
+  closeBtnId: 'modify-intent-close',
+  onClose: () => { modifyIntentState = null; },
+});
 
 // Escape closes whichever modal is topmost; if neither is open, it falls through to closing the
 // reading pane (which has its own selectedConvId check so this is a no-op when nothing is open).
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  if (modifyIntentModal.isOpen()) { modifyIntentModal.close(); return; }
   if (executeModal.isOpen()) { executeModal.close(); return; }
   if (inspectModal.isOpen()) { inspectModal.close(); return; }
   if (selectedConvId) closeReadingPane();

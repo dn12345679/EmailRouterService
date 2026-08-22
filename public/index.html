@@ -160,7 +160,10 @@
 
   <!-- main workspace: inbox / classified / intents render here -->
   <section class="workspace">
-    <p class="workspace-hint" id="submit-hint">Run <strong>Fetch inbox</strong>, then <strong>Classify</strong> and <strong>Check intents</strong>. Tick the rows you want and <strong>Submit &amp; Save</strong> to preview actions before anything is sent. Click a row to preview the thread.</p>
+    
+    <p class="workspace-hint" id="submit-hint">Run <strong>Fetch inbox</strong>, then <strong>Classify</strong> to classify recently pulled emails, and <strong>Check intents</strong> to just check for scheduled updates for all existing emails. Tick the rows you want and <strong>Submit &amp; Save</strong> to preview actions before anything is sent. Click a row to preview the thread.</p>
+    
+    
     <!-- pager lives above the (horizontally-scrollable) table, in its own element, so paging is
          always visible and never scrolls away with the table content -->
     <div class="pager-slot" id="pager-slot"></div>
@@ -197,6 +200,17 @@
         <button class="modal-close" id="execute-close" type="button" aria-label="Close">&times;</button>
       </div>
       <div class="output" data-output="submit-selected" type="status-node-submit-selected"></div>
+    </div>
+  </div>
+
+  <!-- Modify Intent popup (opened from the reading pane, intents view only) -->
+  <div class="modal-overlay hidden" id="modify-intent-overlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modify-intent-title">
+      <div class="modal-head">
+        <h3 class="inspect-title" id="modify-intent-title">Modify Intent</h3>
+        <button class="modal-close" id="modify-intent-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="output" data-output="modify-intent"></div>
     </div>
   </div>
 </main>

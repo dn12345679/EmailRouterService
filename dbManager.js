@@ -148,6 +148,7 @@ export const CLOSING_MESSAGE = (classification) =>
 
 const NO_CODE = 'none';
 const NO_LOT = 'unspecified';
+const MAX_PROPERTY_CODE_LEN = 10; // matches email_property.property_code varchar(10)
 
 // seperate bucket for emails that contain stuff that cant be read, like images
 const UNCLASSIFIABLE_SUBJECT = 'Unclassifiable email';
@@ -832,6 +833,82 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
 }
 
 
+// Manual override path for "Modify Intent" (see public/app.js openModifyIntent). Each key below
+// writes to the exact same column/table that getReadEmailsWithIntents() and executeIntents()
+// already read, so no changes are needed to intent computation or execution -- editing here is
+// indistinguishable from the thread having naturally arrived in that state.
+//   changes: {
+//     forwardAdd?: string[], forwardRemove?: string[],   // recipients.intended_recipient rows
+//     complete?: boolean,                                  // email.flagged_complete
+//     clearDuplicate?: boolean,                             // email.duplicate_of -> NULL
+//     reminderDate?: string, resetReminder?: boolean,       // recipients.reminder_date (thread-wide)
+//   }
+export async function modifyIntent(conversationId, changes = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(`SELECT * FROM email WHERE conversation_id=$1`, [conversationId]);
+    const emailRow = rows[0];
+    if (!emailRow) throw new Error('Conversation not found');
+
+    for (const addr of changes.forwardRemove ?? []) {
+      await client.query(
+        `DELETE FROM recipients WHERE conversation_id=$1 AND LOWER(intended_recipient)=LOWER($2)`,
+        [conversationId, addr]
+      );
+    }
+
+    if (changes.forwardAdd?.length) {
+      const sentDate = new Date(emailRow.created ?? emailRow.updated ?? new Date());
+      for (const addr of changes.forwardAdd) {
+        await client.query(`
+          INSERT INTO recipients (conversation_id, intended_recipient, reminder_date, reminder_count,
+                                   reminder_type, target_date, assigned_date, interval_index)
+          VALUES ($1, $2, NULL, 0, 'Miscellaneous', NULL, $3, 0)
+          ON CONFLICT (conversation_id, intended_recipient) DO NOTHING
+        `, [conversationId, addr, sentDate]);
+      }
+      // a manually added recipient needs a fresh routing pass -- otherwise the forward branch in
+      // executeIntents (gated on !m.forwarded) would never fire for them.
+      await client.query(`UPDATE email SET forwarded=false WHERE conversation_id=$1`, [conversationId]);
+    }
+
+    if (typeof changes.complete === 'boolean') {
+      await client.query(`UPDATE email SET flagged_complete=$2 WHERE conversation_id=$1`,
+        [conversationId, changes.complete]);
+    }
+
+    if (changes.clearDuplicate) {
+      await client.query(`UPDATE email SET duplicate_of=NULL WHERE conversation_id=$1`, [conversationId]);
+    }
+
+    if (changes.resetReminder) {
+      await client.query(`UPDATE recipients SET reminder_date=NULL WHERE conversation_id=$1`, [conversationId]);
+    } else if (changes.reminderDate) {
+      const d = new Date(changes.reminderDate);
+      if (isNaN(d.getTime())) throw new Error('Invalid reminder date');
+      await client.query(`UPDATE recipients SET reminder_date=$2 WHERE conversation_id=$1`, [conversationId, d]);
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // recompute fresh so the caller can refresh just this thread's row/reading-pane without a
+  // full "Check intents" round-trip
+  const { messages, intents } = await getReadEmailsWithIntents();
+  return {
+    message: messages.find(m => m.conversation_id === conversationId) ?? null,
+    intentList: intents[conversationId] ?? [],
+  };
+}
+
+
 // from settings.js config, converts the outpuyt to the email addresses (must go through classify_email_by_ID first to get the JSON object)
 export async function classification_to_email(LLM_output) {
   try{
@@ -884,6 +961,9 @@ function parsePropertyPairs(codes, lots) {
   for (const entry of lots || []) {
     const [prefix, lotNum] = String(entry).split('_');
     const code = prefix === 'none' ? NO_CODE : prefix;
+    // guard against classifier noise that isn't a real code and is too long for
+    // property_code varchar(10) -- would otherwise crash the insert below.
+    if (!isRealPropertyCode(code) && code.length > MAX_PROPERTY_CODE_LEN) continue;
     pairs.push({ code, lot: lotNum ?? NO_LOT });
   }
 
@@ -910,6 +990,10 @@ function parsePropertyPairs(codes, lots) {
   // (ambiguous multi-code cases are left as-is rather than guessed)
   const leftoverCodes = foldStrays ? realCodes : rawCodes;
   for (const code of leftoverCodes) {
+    // a token this long can never be a real property code (they're all short community
+    // codes) -- it's classifier noise from the ambiguous case above. Drop it instead of
+    // letting it hit the property_code varchar(10) column and crash the insert.
+    if (!isRealPropertyCode(code) && code.length > MAX_PROPERTY_CODE_LEN) continue;
     if (!pairs.some(p => p.code === code)) {
       pairs.push({ code, lot: NO_LOT });
     }

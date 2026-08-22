@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import settings from './appsettings.js';
+import settings, { ROUTING_CONFIG } from './appsettings.js';
 import {
   initializeGraphForUserAuth,
   getUserTokenAsync,
@@ -21,7 +21,8 @@ import {
   getReadEmailsWithIntents,
   email_needs_reminder,
   executeIntents,
-  inspectConversations
+  inspectConversations,
+  modifyIntent
  } from './dbManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -137,6 +138,27 @@ app.post('/api/send-mail', requireAuth, async (req, res) => {
   }
 });
 
+
+// used by the "Modify Intent" popup to populate its forward-target dropdown with known routing
+// destinations, without shipping the whole ROUTING_CONFIG (rules, conditions, etc.) to the client
+app.get('/api/routing-config', requireAuth, (req, res) => {
+  const people = Object.entries(ROUTING_CONFIG).map(([name, person]) => ({ name, email: person.email }));
+  res.json(people);
+});
+
+app.post('/api/modify-intent', requireAuth, async (req, res) => {
+  const { conversationId, changes } = req.body ?? {};
+  if (!conversationId || !changes || typeof changes !== 'object') {
+    return res.status(400).json({ error: 'conversationId and changes are required' });
+  }
+  try {
+    const result = await modifyIntent(conversationId, changes);
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/api/group-selected', requireAuth, async (req, res) => {
   try {
