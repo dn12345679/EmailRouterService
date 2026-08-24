@@ -4,6 +4,8 @@ CSV
 dist
 config/config.js
 ARCHITECTURE.md
+public/img/LordshipWhiteboard.jpg
+
 
 # auth / token caches — never commit these
 token_cache.json
