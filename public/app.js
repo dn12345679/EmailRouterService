@@ -322,7 +322,7 @@ async function runJob(job, btn) {
   }
 
   let out = outputEl(job);
-  setLoading(btn, out, 'Running…');
+  setLoading(btn, out, 'Running...');
 
   try {
     if (job === 'inbox') {
@@ -379,13 +379,10 @@ function outputEl(job) {
 }
 
 function setLoading(btn, out, label) {
-// NOTE: im hiding this for now since it makes the UI a lil ugly
-
+  // button-only feedback: disables + relabels the clicked button so the user can tell their
+  // click registered, without touching `out` (which used to get its content replaced with a
+  // bare "Running..." line
   if (btn) { btn.disabled = true; btn.dataset.originalText = btn.textContent; btn.textContent = label; }
-  out.classList.remove('err');
-
-  return;
-  out.innerHTML = `<span class="ok-line">${label}</span>`;
 }
 
 function resetLoading(btn, fallbackLabel) {
