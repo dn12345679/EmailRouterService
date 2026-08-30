@@ -364,12 +364,11 @@ export async function email_needs_reminder() {
 }
 
 // Returns the conversation_id of a similar existing email
-
 // checks sender, property_code, lots, main, subtopic, excludes the current email, and checks
 // whether a matching open original already exists. Sender is matched on the lowercased address
 // so a duplicate is only ever another thread from the same person about the same property/topic.
 async function find_similar_synopsis(client, synopsis, propertyCodes, lots, subjectMain, subjectSub, currentConversationId, sender) {
-  if (!sender) return null; // without a known sender we can't scope the match, so don't dedup
+  if (!sender) return null; // no known sender = cant claim duplicate
   const pairs = parsePropertyPairs(propertyCodes, lots);
   const codesArr = pairs.map(p => p.code);
   const lotsArr = pairs.map(p => p.lot);
@@ -447,29 +446,23 @@ export async function getReadEmailsWithIntents() {
       GROUP BY e.conversation_id
     `);
 
-    // drop automated/notification threads entirely (no-reply, Teams, etc.) so they never
-    // get intents even if an older row is still in the DB
+    // ignored senders are people like no-reply, microsoft-teams, confirmation codes, etc
     const messages = result.rows.filter(m => !isIgnoredSender(m.sender));
 
-    // intents are now a LIST per thread: intents[convId] = [ { intent, interestedParty, ... }, ... ]
-    // An absent key or empty list means "do nothing" -- the default when a thread does not
-    // need forwarding, is not a real duplicate, and has no reminder to set/send/escalate.
+    // intents are a list for each thread like this: intents[convId] = [ { intent, interestedParty, ... }, ... ]
+    // if there are no intents, by default it is an empty intent meaning nothing is to be done here
     const intentsByConversationId = new Map();
     const pushIntent = (convId, obj) => {
       if (!intentsByConversationId.has(convId)) intentsByConversationId.set(convId, []);
       intentsByConversationId.get(convId).push(obj);
     };
 
-    // "Needs information": threads we can't route because Claude couldn't pin down the
-    // property code and/or lot. These get a reply asking the sender to identify the property
-    // instead of being forwarded/reminded/escalated.
+    // INTENT (NEEDS INFO): missing property or lot, this intent will inquire for it
     const needsInfoSet = new Set();
+
     if (NEEDS_INFO_CONFIG?.enabled && messages.length) {
       const convIds = messages.map(m => m.conversation_id);
-      // Pull the raw tokens and classify each against propertyToRegion.json rather than
-      // trusting which column it landed in -- a real code (in the JSON) means "has code",
-      // any other non-placeholder token means "has lot". This is robust even to rows where
-      // the classifier stored a lot ("55", "A44") in the property_code column.
+      // unconfident check that just verifies whether a mentioned lot actually exists
       const propRes = await pool.query(
         `SELECT conversation_id, property_code, lot FROM email_property WHERE conversation_id = ANY($1)`,
         [convIds]
@@ -489,25 +482,46 @@ export async function getReadEmailsWithIntents() {
 
       for (const m of messages) {
         if (m.subject_main === UNCLASSIFIABLE_SUBJECT) continue; // handled by the dedicated unclassifiable flow
-        if (skipSubjects.has(m.subject_main)) continue; // e.g. Miscellaneous never needs a lot
+        if (skipSubjects.has(m.subject_main)) continue; // Misc will never need a lot 
         if (m.duplicate_of !== null) continue;          // duplicates inherit the original's identity
-        if (m.flagged_complete) continue;               // a resolved thread should be completed, not asked for info
+        if (m.flagged_complete) continue;               // i assume resolved threads wont be needing identification
         if (m.forwarded) continue;                       // already routed / in progress
         const p = presence.get(m.conversation_id) ?? { hasCode: false, hasLot: false };
         const missingCode = NEEDS_INFO_CONFIG.requirePropertyCode && !p.hasCode;
         const missingLot = NEEDS_INFO_CONFIG.requireLot && !p.hasLot;
         if (missingCode || missingLot) needsInfoSet.add(m.conversation_id);
       }
-    }
+    } // end of the INTENT: NEEDS INFO block
 
+
+    // INTENT (UNCLASSIFIABLE): has the sender already been asked for context once?
+    // Tracked via the sender-anchor recipient row's reminder_count rather than
+    // `forwarded` -- `forwarded` is sticky (OR'd with its old value on every
+    // reclassification, see insertIntoDB), so if we used it here it would get
+    // pinned true after the first "please give context" reply and could never be
+    // un-set once the sender actually replies with real info, silently preventing
+    // the eventual real forward to the routed recipients.
+    const unclassifiableContactedSet = new Set();
+    if (messages.some(m => m.subject_main === UNCLASSIFIABLE_SUBJECT)) {
+      const convIds = messages
+        .filter(m => m.subject_main === UNCLASSIFIABLE_SUBJECT)
+        .map(m => m.conversation_id);
+      const contactedRes = await pool.query(
+        `SELECT DISTINCT conversation_id FROM recipients WHERE conversation_id = ANY($1) AND reminder_count > 0`,
+        [convIds]
+      );
+      for (const row of contactedRes.rows) unclassifiableContactedSet.add(row.conversation_id);
+    } // end of the INTENT: UNCLASSIFIABLE contacted-once check
+
+
+    // INTENT: REMINDERS/SUPERVISORS/REMINDER
     const reminderIntents = { scheduled: [], reminder: [], supervisor: [] };
     await scheduleNewReminders(messages, reminderIntents);
     await checkReminders(messages, reminderIntents);
 
     const supervisorSet = new Set(reminderIntents.supervisor);
     const reminderDueSet = new Set(reminderIntents.reminder.map(r => r.convId));
-    // threads Claude flagged as resolved -> a `complete` intent (for confirmation), which
-    // takes precedence over reminders/escalation
+    // any thread  marked as complete by the LLM will ignore any form of reminder or escalation 
     const completeSet = new Set();
 
     for (const m of messages) {
@@ -515,7 +529,7 @@ export async function getReadEmailsWithIntents() {
       const recipients = (m.intended_recipients ?? []).filter(Boolean);
       const isDuplicate = m.duplicate_of !== null;
       const flaggedComplete = m.flagged_complete === true;
-      const isUnclassifiable = m.subject_main === UNCLASSIFIABLE_SUBJECT;
+      const isUnclassifiable = m.subject_main === UNCLASSIFIABLE_SUBJECT; // unclassifiables are ones that have no discernable content (like vague images, <50 char messages)
 
       // duplicate of an existing thread (can co-exist with a reminder if the thread has recipients)
       if (isDuplicate) {
@@ -523,38 +537,39 @@ export async function getReadEmailsWithIntents() {
         pushIntent(convId, { intent: 'duplicate', interestedParty: original?.created ?? null });
       }
 
-      // Unclassifiable (image-only / contentless forward): ask the sender for context once, then
-      // let the reminder cadence (anchored on the sender row) nudge and eventually escalate. Its
-      // "recipients" row is the sender anchor, NOT a routing target, so it must never forward.
-      if (isUnclassifiable && !m.forwarded && !isDuplicate && !flaggedComplete) {
+      // unclassifiable emails ask for context from the original sender, but dont forward yet because it doesnt know who to send this to yet
+      // target will always be the person who sent the confusing message. Gated on
+      // reminder_count instead of forwarded (see unclassifiableContactedSet above)
+      // so forwarded stays false until a real forward actually happens.
+      if (isUnclassifiable && !unclassifiableContactedSet.has(convId) && !isDuplicate && !flaggedComplete) {
         pushIntent(convId, { intent: 'unclassifiable', interestedParty: m.sender });
       }
 
-      // forward to the routed recipients when there is a new party to add. This now runs even
-      // for needs_info threads -- routing rarely depends on the property/lot, so we still send
-      // the email where it belongs.
+
+      // email will be forwarded if there is someone to forward it to even if no property is found, as long as the email has an actual topic
       if (!m.forwarded && recipients.length && !isDuplicate && !isUnclassifiable) {
         pushIntent(convId, { intent: 'forward', interestedParty: recipients });
       }
 
-      // property/lot unclear -> ALSO ask the sender to identify it. This is a flag, not a gate:
-      // the thread still forwards (above) and follows the reminder / lifecycle flow (below).
+      // INTENT: NEEDS INFO flag
       if (needsInfoSet.has(convId)) {
         pushIntent(convId, { intent: 'needs_info', interestedParty: null });
       }
 
-      // Claude flagged this thread as resolved -> surface a `complete` intent for confirmation.
-      // This is only a premature flag; the thread is finalized to status='complete' when the
-      // intent is executed.
+      // INTENT: (LOOKS) COMPLETE flag, will mark the thread as complete and add the closing 
       if (flaggedComplete && !isDuplicate) {
         pushIntent(convId, { intent: 'complete', interestedParty: null });
         completeSet.add(convId);
       }
     }
 
-    // reminder-family intents. A thread being completed (or flagged complete) is never
-    // reminded or escalated. Supervisor escalation takes precedence over a nudge, and a due
-    // reminder takes precedence over first-scheduling.
+
+    // INTENT: ALL REMINDER TYPES
+      // PRIORITY
+        // 1. Complete/Complete flags, marks as complete but do not continue scheduling
+        // 2. Supervisor escalation, send to supervisor and clear reminder stuff
+        // 3. Due reminder
+        // 4. Schedule reminder
     for (const convId of reminderIntents.supervisor) {
       const m = messages.find(mm => mm.conversation_id === convId);
       if (!m || m.status === 'complete' || completeSet.has(convId)) continue;
@@ -572,6 +587,9 @@ export async function getReadEmailsWithIntents() {
       if (!m || m.status === 'complete') continue;
       pushIntent(convId, { intent: 'reminder_scheduled', interestedParty: date });
     }
+  
+    
+    // END OF ALL INTENTS
 
     const intents = Object.fromEntries(intentsByConversationId);
     console.log('[button3] final intents:', intents);
@@ -594,6 +612,9 @@ function fmtDate(d) {
   try { return new Date(d).toLocaleString(); } catch { return String(d); }
 }
 
+
+
+// takes all the conversationIds, and actually gets their intents, then runs them
 export async function executeIntents(conversationIds = null, { dryRun = true } = {}) {
   const { messages, intents } = await getReadEmailsWithIntents();
   const byId = new Map(messages.map(m => [m.conversation_id, m]));
@@ -606,7 +627,7 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
 
   for (const m of selected) {
     const entryList = intents[m.conversation_id] ?? [];
-    const findIntent = (name) => entryList.find(e => e.intent === name);
+    const findIntent = (name) => entryList.find(e => e.intent === name); // maps all the intents by name
     const duplicateIntent = findIntent('duplicate');
     const forwardIntent = findIntent('forward');
     const completeIntent = findIntent('complete');
@@ -626,13 +647,10 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
       catch (e) { actions.push({ label, status: 'error', error: e.message }); }
     };
 
-    // Two exclusion lists for reply-alls (all go through the draft helper):
-    //  - forwardExclude: applied ONLY on the initial routing/forward step -- drops the external
-    //    (non-internal) original sender so the internal hand-off doesn't loop the third party in,
-    //    plus anyone who explicitly asked to be removed.
-    //  - replyExclude: applied on every LATER reply (reminder / complete / duplicate close) --
-    //    drops ONLY people who explicitly asked to be removed. The external sender is intentionally
-    //    kept so they stay informed on updates to a thread they're already part of.
+
+    // 2 ways of exclusion: 
+      // - forwardExclude = only applies once. Drops the external party if they exist, and only forwards to necessary recipient
+      // - replyExclude = applies after the above. drops anyone who specifically asks for themself to be removed from the thread. Keep everyone else regardless
     const explicitRemovals = Array.isArray(m.remove_from_thread) ? m.remove_from_thread.filter(Boolean) : [];
     const forwardExclude = excludeFor(m);
     const replyExclude = explicitRemovals;
@@ -649,6 +667,9 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
         () => archiveThreadAsync(m.conversation_id));
     };
 
+
+
+    
     try {
       if (!entryList.length) {
         actions.push({ label: 'No actionable intent (do nothing)', status: 'skipped' });
@@ -685,10 +706,8 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
       else {
         const recipients = (m.intended_recipients ?? []).filter(Boolean);
 
-        // route the thread by reply-all-ing and adding the routed parties to the To: line (keeps
-        // everyone on one thread, carries the attachments). Runs even for needs_info threads.
-        // Skipped for unclassifiable threads: their only "recipient" is the sender anchor, which
-        // is not a routing target.
+
+        // route the thread to necessary parties with necessary attachments, unless if its unclassifiable, in which case only the sender is replied to
         if (!m.forwarded && recipients.length && !isUnclassifiable) {
           await perform(`Reply-all route to: ${recipients.join(', ')} (${forwardExcludeLabel}, +attachments)`,
             () => replyAllDraft(m.id, { add: recipients, remove: forwardExclude, copyAttachments: true }));
@@ -696,24 +715,24 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
             () => pool.query(`UPDATE email SET forwarded=true WHERE conversation_id=$1`, [m.conversation_id]));
         }
 
-        // Unclassifiable (image-only / contentless forward): reply to the sender once asking for
-        // the subject/property/lot, then mark forwarded so the first-contact reply fires only
-        // once -- subsequent nudges come from the reminder cadence below. The reminder was
-        // anchored on the sender at insert time, so the scheduled/reminder/supervisor branches
-        // handle the cadence and eventual escalation.
+        // for unclassifiable, image only, or contentless forward, reply to the sender asking for clarification.
+        // "forwarded" not set to true because no intended source yet until reply.
+        // is tracked via the sender's recipient row (reminder_count > 0) instead. see
+        // unclassifiableContactedSet in getReadEmailsWithIntents.
         if (unclassifiableIntent) {
           const askSender = m.sender ? [m.sender] : null;
           await perform(`Unclassifiable reply to ${m.sender || 'all'}: "${UNCLASSIFIABLE_CONFIG.message}"`,
             () => askSender
               ? replyToThreadAsync(m.id, UNCLASSIFIABLE_CONFIG.message, askSender)
               : replyAllToThreadAsync(m.id, UNCLASSIFIABLE_CONFIG.message));
-          await perform(`Mark forwarded in DB (unclassifiable first-contact sent)`,
-            () => pool.query(`UPDATE email SET forwarded=true WHERE conversation_id=$1`, [m.conversation_id]));
+          await perform(`Mark first-contact sent (reminder_count -> 1) for ${m.sender}`,
+            () => pool.query(
+              `UPDATE recipients SET reminder_count = GREATEST(reminder_count, 1) WHERE conversation_id=$1 AND LOWER(intended_recipient)=LOWER($2)`,
+              [m.conversation_id, m.sender]));
         }
 
-        // property/lot unclear -> also ask the ORIGINAL SENDER to identify it. This does not
-        // stop the thread: it is still routed above and still follows the reminder/lifecycle
-        // flow below. It only fires while the thread is un-forwarded, so the sender is asked once.
+
+        // ask the original sender to identify their property/lot if it is unclear. Routing is still the same and reminder flow is the same
         if (needsInfoIntent) {
           const askSender = m.sender ? [m.sender] : null;
           await perform(`Needs-info reply to ${m.sender || 'all'}: "${NEEDS_INFO_CONFIG.message}"`,
@@ -722,6 +741,8 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
               : replyAllToThreadAsync(m.id, NEEDS_INFO_CONFIG.message));
         }
 
+
+        // or just complete the thread
         if (completeIntent) {
           await completeThread();
         }
@@ -774,17 +795,19 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
         }
 
         // deadline passed, reminder due -> gate on the LLM resolution check:
-        // resolved => complete now, otherwise send the nudge and reschedule the next reminder
+        // resolved => complete now, otherwise send the reminder and reschedule the next reminder
         else if (reminderIntent) {
           const date = reminderIntent.interestedParty;
           const nextIndex = reminderIntent.nextIndex ?? null;
-          // An unclassifiable thread has no discernible content, so the "does this look resolved?"
-          // check is meaningless -- skip it and just re-ask the sender for context.
+
+          // unclassifiable threads that have reminders dont have actual content, so instead of asking for 'is this resolved', check again for context.
           const resolved = isUnclassifiable ? false : await threadLooksResolved(m.body || '');
           if (!isUnclassifiable) {
             actions.push({ label: `Resolution check -> ${resolved ? 'resolved' : 'not resolved'}`, status: 'done' });
           }
 
+
+          // or complete the thread
           if (resolved) {
             await completeThread();
           } else {
@@ -967,17 +990,15 @@ function parsePropertyPairs(codes, lots) {
     pairs.push({ code, lot: lotNum ?? NO_LOT });
   }
 
-  // The classifier is inconsistent about e.g. "BL 55" / "OM A44": sometimes the lot lands in
-  // the code array (code=["BL","55"] or ["OM","A44"]) instead of the lot array. Property codes
-  // are guaranteed to be in propertyToRegion.json, so any token that is NOT a real code is a
-  // stray lot. When there is exactly one real code, fold the stray lots onto it so all
-  // classifications normalize to the same (code, lot) pair -- otherwise duplicate detection
-  // misses them and needs_info fires incorrectly.
+
+  // classifier sometimes inconsistent about pairing, and sometimes treats the lot number as a property code. 
+  // constraint property codes to be existing in propertyToRegion.json 
   const rawCodes = (codes || []).map(c => String(c).trim()).filter(c => !isPlaceholder(c));
   const realCodes = rawCodes.filter(isRealPropertyCode);
   const strayLots = rawCodes.filter(c => !isRealPropertyCode(c));
   const foldStrays = realCodes.length === 1 && strayLots.length > 0;
 
+  // attempts to fold pairs of read code to a lot number, this is a very unconfident approximation and is hard to replace actual human checking
   if (foldStrays) {
     for (const lot of strayLots) {
       if (!pairs.some(p => p.code === realCodes[0] && p.lot === lot)) {
@@ -986,7 +1007,7 @@ function parsePropertyPairs(codes, lots) {
     }
   }
 
-  // remaining bare codes: real codes always; stray tokens only when we couldn't fold them
+  // remaining bare codes: real codes always. stray tokens only when unfoldable
   // (ambiguous multi-code cases are left as-is rather than guessed)
   const leftoverCodes = foldStrays ? realCodes : rawCodes;
   for (const code of leftoverCodes) {
@@ -1048,8 +1069,8 @@ export function email_within_domain(domain, email) {
 function determineReminderAction(recipientRow, config) {
   const now = new Date();
 
-  // if the hard deadline passed, send to supervisors -- but only after at least one reminder
-  // has been sent (grace period). A brand-new past-deadline thread gets a nudge first.
+
+  // escalate if hard deadline passed and at least 1 reminder was sent. (priority over sending another reminder)
   const hardDeadlineBlown =
     config.completeByDate &&
     recipientRow.target_date &&
@@ -1078,8 +1099,8 @@ function nextReminderDate(row, nextIndex) {
 }
 
 
-// INITIAL INSERT ONLY, INTENTS occur after
 // this is directly called from graphHelper.uploadToDB() and uses the output from graphHelper.getUniqueMessages()
+// this function actually writes results to Postgresql
 export async function insertIntoDB(emails) {
   const client = await pool.connect();
   try {
@@ -1102,10 +1123,8 @@ export async function insertIntoDB(emails) {
       const classification = await classify_email(email);
       const recipients = await classification_to_email(classification);
 
-      // Don't dedup an unclassifiable thread against another one -- they share the placeholder
-      // subject/property and have no real content, so their synopses would false-match and
-      // silently merge two unrelated contentless forwards. It stays its own thread until the
-      // sender supplies context and it reclassifies into a real subject.
+      // the conversationId of a similar thread if it exists, unless if the email is unclassifiable (in which case it is considered unique always)
+      // if unclassified emails later receive context from the recipient, then it will no longer be unclassifiable and only then is it eligible for dupe matching
       const similar = (classification.subject.main === UNCLASSIFIABLE_SUBJECT)
         ? null
         : await find_similar_synopsis(
@@ -1119,19 +1138,23 @@ export async function insertIntoDB(emails) {
             email.sender
           );
 
-      // never let a thread be a duplicate of itself (belt-and-suspenders on top of the SQL guard)
+      // never let a thread be a duplicate of itself
       const duplicateOf = (similar && similar.conversation_id !== email.conversationId) ? similar : null;
 
       // people who asked to be dropped from the thread (used to trim reply-all recipients later).
-      // Claude re-derives this from the full thread every classify, so we just overwrite it.
+      // Claude re-derives this from the full thread every classify
       const removeList = Array.from(new Set(
         (classification.important.removeFromThread ?? [])
           .map(a => String(a).trim().toLowerCase())
           .filter(Boolean)
       ));
 
+      // addto the collection
       output.push({ conversationId: email.conversationId, updated: email.updated, classification, recipients, similar: duplicateOf });
 
+
+
+      // duplicate emails will have the 'complete' flag ready
       if (duplicateOf) {
         email.status = 'complete';
         email.forwarded = true;
@@ -1161,10 +1184,9 @@ export async function insertIntoDB(emails) {
 
         await client.query(`UPDATE email SET status = 'read' WHERE conversation_id = $1`, [duplicateOf.conversation_id]);
 
-        // If this duplicate carries a MORE URGENT hard deadline than the original, let the
-        // original adopt it: tighten its target_date, take this thread's reminder type, and null
-        // its reminder_date so the cadence reschedules against the new (sooner) deadline. The
-        // WHERE guard only updates originals whose deadline is missing or later than this one's.
+
+        // gets the scheduled reminder date of the duplicate email (this one) if it exists, then performs an upsert to 
+          // automatically move the reminders from the dupe to the existing one, tightening the deadline if one exists
         const dupTarget = (classification.important.scheduledReminder && classification.important.scheduledReminder !== "-")
           ? new Date(classification.important.scheduledReminder) : null;
 
@@ -1177,26 +1199,22 @@ export async function insertIntoDB(emails) {
           `, [duplicateOf.conversation_id, dupTarget, classification.important.reminderType ?? 'Miscellaneous']);
         }
 
-        // This thread turned out to be a duplicate, so it is folded into the original -- drop any
-        // reminder it accrued (e.g. one scheduled earlier while its property was still unknown).
-        // The original thread carries the reminder cycle.
+        // remove the reminders from the dupe email so multiple reminders arent sent to dupe emails
         await client.query(`DELETE FROM recipients WHERE conversation_id = $1`, [email.conversationId]);
         continue;
       }
 
-      // Claude's "completed" is a PREMATURE flag only -- the thread stays 'read' and is
-      // surfaced as a `complete` intent for confirmation. It is only finalized to
-      // status='complete' when that intent is executed.
+      // the LLM classification to 'complete' is premature, and only on manual execution will the flag be set
       email.status = 'read';
-      email.flaggedComplete = !!classification.important.completed;
+      email.flaggedComplete = !!classification.important.completed; // gets the boolean value of the completed flag 
       const isUnclassifiable = classification.subject.main === UNCLASSIFIABLE_SUBJECT;
 
-      // Forwarding is unnecessary when the sender said so explicitly (LLM flag) or every
-      // routed recipient is already a party on the thread. (Completion no longer suppresses
-      // forwarding -- a completing thread should still make sure everyone is included first.)
-      // Never auto-mark an unclassifiable thread forwarded here: it has no routed recipients
-      // (recipients.every() is vacuously true), and it must stay un-forwarded so the
-      // unclassifiable intent fires its first-contact reply. That intent marks it forwarded after.
+
+
+      // if the LLM determines that forwarding is unecessary (bcs someone says "dont forward this email") explicitly,
+        // or if the recipients needed are already in the thread to begin with, 
+        // or if the flag is not unclassifiable  (since that behavior is not possible to piece together yet)
+        // then set the forwarded flag to true
       if (
         !isUnclassifiable && (
           classification.important.forwardingNotNeeded ||
@@ -1220,14 +1238,12 @@ export async function insertIntoDB(emails) {
           id = EXCLUDED.id, status = EXCLUDED.status, created = EXCLUDED.created,
           updated = EXCLUDED.updated, sender = EXCLUDED.sender, subject = EXCLUDED.subject,
           body = EXCLUDED.body, in_reply_to = EXCLUDED.in_reply_to,
-          -- sticky: "forwarded" means "we already sent the one-time routing email". A thread
+          -- "forwarded" means "we already sent the one-time routing email". A thread
           -- that gets reclassified after being forwarded (e.g. because our own reply-all is now
           -- part of the thread history, or the tenant replied) would otherwise have this
-          -- recomputed from scratch by the block above -- which starts from a fresh Graph fetch
+          -- recomputed from scratch by the block above which starts from a fresh Graph fetch
           -- defaulting to false, and only flips true again if THIS pass happens to satisfy
-          -- forwardingNotNeeded / "everyone already on the thread". That's not guaranteed on every
-          -- pass, so without this OR, an already-forwarded thread could silently un-forward and
-          -- resurface the 'forward' intent with no real update having occurred.
+          -- forwardingNotNeeded / "everyone already on the thread".
           forwarded = email.forwarded OR EXCLUDED.forwarded,
           synopsis = EXCLUDED.synopsis, subject_main = EXCLUDED.subject_main,
           subject_sub = EXCLUDED.subject_sub, duplicate_of = EXCLUDED.duplicate_of,
@@ -1251,11 +1267,11 @@ export async function insertIntoDB(emails) {
         let sentDate = new Date(email.created ?? email.updated ?? new Date());
         if (isNaN(sentDate.getTime())) sentDate = new Date();
 
+        // unclassifiable behavior
         if (isUnclassifiable) {
-          // No routed recipients. Anchor a reminder on the SENDER so the cadence can nudge them
-          // for context and escalate to Supervisors if they never reply. The sender is the
-          // reminder anchor only -- it is never treated as a routing target (the forward intent
-          // is suppressed for unclassifiable threads).
+          
+          // if nobody is routed, then also remind the sender for context or escalate by default if no reply.
+            // this is treated as an anchor, since the email is still unforwareded
           const reminderType = classification.important.reminderType ?? "Unclassifiable";
           await client.query(`
             INSERT INTO recipients (
@@ -1266,9 +1282,8 @@ export async function insertIntoDB(emails) {
             ON CONFLICT (conversation_id, intended_recipient) DO NOTHING
           `, [email.conversationId, email.sender, reminderType, sentDate]);
         } else {
-          // If this thread was previously unclassifiable, drop the sender-anchor reminder row now
-          // that we have a real classification. The external sender is never a routed recipient,
-          // so this only removes the stale anchor (no-op for a normal fresh thread).
+
+          // unclassifiable threads have the anchors dropped once a real classification is derived
           if (email.sender) {
             await client.query(
               `DELETE FROM recipients WHERE conversation_id = $1 AND LOWER(intended_recipient) = LOWER($2)`,
@@ -1331,9 +1346,9 @@ function day2ms(days){
 function getReminderDateForRecipient(reminderType, targetDate, recipientRow) {
   const config = REMINDER_CONFIG[reminderType] ?? REMINDER_CONFIG["Miscellaneous"];
   const now = new Date();
-  // Anchor scheduling to when the email was RECEIVED (assigned_date = email.created), not the
-  // current time, so historical emails get historically-correct reminder dates. `now` is only
-  // a last-resort fallback if the received date is somehow missing.
+
+  // REMINDER SCHEDULING is based on the time the email was received (assigned_date = email.created), not the time the email was collected.
+    // this prevents issues with late reminders and enforces 'stacking' reminders instead, otherwise if its empty just set the assigned date to collection date
   const received = recipientRow.assigned_date ? new Date(recipientRow.assigned_date) : now;
   const lastResponse = recipientRow.last_response_date ? new Date(recipientRow.last_response_date) : null;
   const addDays = (date, n) => new Date(new Date(date).getTime() + day2ms(n));
@@ -1400,10 +1415,8 @@ async function scheduleNewReminders(emails, intents) {
 export async function checkReminders(emails, intents) {
   const client = await pool.connect();
   try {
-    // A row is relevant if a reminder is actually due, OR it qualifies for escalation
-    // (too many reminders sent, or the hard deadline has passed). The reminder_count / deadline
-    // conditions are checked here directly so a high count with a NULL/future reminder_date
-    // still escalates -- previously such rows were never selected and got mis-treated as normal.
+
+    // only check rows that have reminders due, need escalation, 
     const result = await client.query(`
       SELECT DISTINCT ON (conversation_id)
         conversation_id, reminder_count, reminder_type, target_date,
@@ -1424,19 +1437,12 @@ export async function checkReminders(emails, intents) {
       const config = REMINDER_CONFIG[row.reminder_type] ?? REMINDER_CONFIG["Miscellaneous"];
       const now = new Date();
       const pastTargetDate = config.completeByDate && row.target_date && now > new Date(row.target_date);
-      // per-type escalation cap; default 9 preserves the previous hardcoded "> 8" behavior.
-      // Unclassifiable threads set this low (e.g. 3) so a few unanswered context requests escalate.
-      const escalateAfter = config.escalateAfterReminders ?? 9;
+      const escalateAfter = config.escalateAfterReminders ?? 9; // hard coded value default 9 reminder to escalation
 
-      // escalate to supervisors when the hard deadline has passed or too many reminders were
-      // sent. The "not flagged complete in any way" half of the condition is enforced in
-      // getReadEmailsWithIntents, which drops complete / flagged-complete threads from the
-      // supervisor list before the intent is emitted.
-      //
-      // Grace period: a passed hard deadline only escalates once at least one reminder has
-      // actually been sent (reminder_count >= 1). A brand-new past-deadline thread falls
-      // through to get a first nudge instead of an immediate escalation. The reminder-count
-      // clause still escalates on reminder exhaustion regardless of the deadline.
+
+
+      // escalate to supervisor (push to intent supervisor) if the hard deadline has passed after at least 1 reminder after (for leniency)
+      // . the complete flags are already not checked here since getReadEmailsWithIntents already takes care of that
       if ((pastTargetDate && row.reminder_count >= 1) || row.reminder_count >= escalateAfter) {
         intents.supervisor.push(convId);
         continue;
@@ -1447,8 +1453,8 @@ export async function checkReminders(emails, intents) {
       const reminderDue = row.reminder_date && now > new Date(row.reminder_date);
       if (!reminderDue) continue;
 
-      const nextIndex = row.interval_index + 1;
-      const nextDate = getReminderDateForRecipient(row.reminder_type, row.target_date, { ...row, interval_index: nextIndex });
+      const nextIndex = row.interval_index + 1; // if reminders have non-repeating cycles (ie: 1 day reminder -> 2 day -> 4 day -> repeat)
+      const nextDate = getReminderDateForRecipient(row.reminder_type, row.target_date, { ...row, interval_index: nextIndex }); // check config
       intents.reminder.push({ convId, date: nextDate, nextIndex });
     }
   } finally {

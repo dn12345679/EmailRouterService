@@ -252,11 +252,8 @@ export async function getUniqueMessages(threadCount = 10) {
     const lastResponseDate = lastIncoming?.receivedDateTime ?? null;
 
     const fullBody = sorted.map(msg => {
-      // uniqueBody is only the text this message adds that's new to the conversation.
-      // For a plain forward with no added comment, Graph treats the ENTIRE forwarded
-      // chain as quoted history, so uniqueBody comes back empty and all the real content
-      // sits in body (inside a divRplyFwdMsg block). Fall back to the full body in that
-      // case so forwarded content isn't lost.
+
+      // fall back to the full message history in the case that the unique body is not here (most recent message in the chain)
       let text = extractBodyTextWithCheerio(msg.uniqueBody?.content ?? '').join(" ");
       if (!text.trim()) {
         text = extractBodyTextWithCheerio(msg.body?.content ?? '').join(" ");
@@ -387,10 +384,9 @@ export async function replyToThreadAsync(messageId, comment, toRecipients = null
 
 
 // Reply-all to a thread via a DRAFT, so we can adjust the recipient list (add routed parties,
-// drop unwanted addresses) and optionally carry the original file attachments over. A plain
-// replyAll can't exclude anyone and always strips attachments, which is why we go through a draft.
-//   add             - addresses to add to the To: line (e.g. newly routed parties)
-//   remove          - addresses to drop from To/CC (e.g. external sender, "remove me" requests)
+// drop unwanted addresses) and optionally carry the original file attachments over. 
+//   add             - addresses to add to the To: line 
+//   remove          - addresses to drop from To/CC 
 //   comment         - message text, prepended above the quoted thread
 //   copyAttachments - re-attach the original message's file attachments to the reply
 export async function replyAllDraft(messageId, { add = [], remove = [], comment = '', copyAttachments = false } = {}) {
