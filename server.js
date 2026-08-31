@@ -94,6 +94,16 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// Logs the real error server-side but never forwards its text to the client -- a raw
+// err.message can leak internal details (DB errors, file paths, stack info) to whoever can
+// reach the API.
+function sendServerError(res, err, message) {
+  console.error(err);
+  res.status(500).json({ error: message });
+}
+
+const MAX_INSPECT_IDS = 4;
+
 
 app.get('/api/inbox', requireAuth, async (req, res) => {
   try {
@@ -102,8 +112,7 @@ app.get('/api/inbox', requireAuth, async (req, res) => {
     const msgs = await getUniqueMessages(count);
     res.json(msgs);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to fetch inbox.');
   }
 });
 
@@ -113,12 +122,14 @@ app.post('/api/inspect', requireAuth, async (req, res) => {
   if (!Array.isArray(conversationIds) || conversationIds.length === 0) {
     return res.status(400).json({ error: 'conversationIds array is required' });
   }
+  if (conversationIds.length > MAX_INSPECT_IDS) {
+    return res.status(400).json({ error: `Inspect supports at most ${MAX_INSPECT_IDS} conversations at a time.` });
+  }
   try {
     const info = await inspectConversations(conversationIds);
     res.json(info);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to inspect conversations.');
   }
 });
 
@@ -133,8 +144,7 @@ app.post('/api/send-mail', requireAuth, async (req, res) => {
     await sendMailAsync(subject, body, recipient);
     res.json({ ok: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to send mail.');
   }
 });
 
@@ -155,8 +165,7 @@ app.post('/api/modify-intent', requireAuth, async (req, res) => {
     const result = await modifyIntent(conversationId, changes);
     res.json(result);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to modify intent.');
   }
 });
 
@@ -165,8 +174,7 @@ app.post('/api/group-selected', requireAuth, async (req, res) => {
     const result = await getReadEmailsWithIntents();
     res.json(result);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to check intents.');
   }
 })
 
@@ -176,8 +184,7 @@ app.post('/api/execute-plan', requireAuth, async (req, res) => {
     const plan = await executeIntents(conversationIds ?? null, { dryRun: true });
     res.json(plan);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to build execution plan.');
   }
 });
 
@@ -188,8 +195,7 @@ app.post('/api/execute', requireAuth, async (req, res) => {
     const result = await executeIntents(conversationIds ?? null, { dryRun: false });
     res.json(result);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to execute intents.');
   }
 });
 
@@ -204,8 +210,7 @@ app.post('/api/classify-selected', requireAuth, async (req, res) => {
     const reminderDueIds = await email_needs_reminder()
     res.json({result, reminderDueIds  });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to classify selected messages.');
   }
 })
 
@@ -216,8 +221,7 @@ app.post('/api/classify-all', requireAuth, async (req, res) => {
     const result = await uploadToDB(count);
     res.json({ ok: true, count: result.length });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to classify all messages.');
   }
 });
 
@@ -230,8 +234,7 @@ app.post('/api/classify-email', requireAuth, async (req, res) => {
     const recipient = await classification_to_email(classification)
     res.json(classification);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err, 'Failed to classify email.');
   }
 });
 

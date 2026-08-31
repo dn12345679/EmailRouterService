@@ -234,6 +234,14 @@ a { color: var(--accent); }
 }
 .btn-secondary:hover { background: rgba(94,234,212,0.08); }
 
+/* completed action button: shows a checkmark instead of the label until re-hovered */
+.btn.btn-completed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+.btn.btn-completed:hover { background: var(--accent); opacity: 0.9; }
+
 .btn-ghost {
   background: transparent;
   border-color: var(--border);
@@ -650,6 +658,13 @@ a { color: var(--accent); }
   animation: toast-out 0.15s ease forwards;
 }
 
+.toast-success {
+  background: #10321a;
+  border-color: rgba(57,115,52,0.5);
+  color: #bfe8c2;
+}
+.toast-success .toast-close { color: #bfe8c2; }
+
 .toast-message { flex: 1; word-break: break-word; }
 
 .toast-close {
@@ -870,6 +885,16 @@ table.kv .kv-key { color: var(--text-muted); white-space: nowrap; padding-right:
 
 .output.err { color: var(--red); border-color: rgba(248,113,113,0.35); background: var(--error-panel); }
 .output.ok-line { color: var(--accent); margin-bottom: 8px; }
+
+/* brief pulse to draw the eye to freshly-rendered content (e.g. after Classify/Check intents) */
+.output.flash-new { animation: output-flash 900ms ease-out; }
+@keyframes output-flash {
+  from { box-shadow: 0 0 0 3px rgba(57,115,52,0.5); }
+  to { box-shadow: 0 0 0 3px rgba(57,115,52,0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .output.flash-new { animation: none; }
+}
 
 /* Inside the workspace the output has no box of its own -- it sits directly on the canvas, so
    the toolbar above stays the only "raised" surface. (The inspect modal's output keeps its box,

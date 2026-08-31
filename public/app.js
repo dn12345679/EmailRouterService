@@ -218,7 +218,7 @@ function getFetchCount() {
 
 // short, human-scannable tail of a conversation id, e.g. "...RsN0A"
 function shortId(id) {
-  if (!id) return '—';
+  if (!id) return '-';
   return '...' + String(id).replace(/=+$/, '').slice(-5);
 }
 
@@ -306,6 +306,10 @@ async function runJob(job, btn) {
       renderError(out, 'Paste at least one conversation ID.');
       return;
     }
+    if (ids.length > 4) {
+      renderError(out, 'Inspect supports at most 4 conversations at a time.');
+      return;
+    }
     setLoading(btn, out, 'Inspecting…');
     try {
       const info = await fetchJSON('/api/inspect', {
@@ -323,6 +327,7 @@ async function runJob(job, btn) {
 
   let out = outputEl(job);
   setLoading(btn, out, 'Running...');
+  let succeeded = false;
 
   try {
     if (job === 'inbox') {
@@ -338,25 +343,28 @@ async function runJob(job, btn) {
       });
       classified = result.result;
       console.log(classified)
-     
-      setLoading(null, out, 'Completed.'); // just sets the status of the 'running...' to complete
 
       out = outputEl('inbox'); // want to bundle all stuff into 1 UI for consistency
-      
-      renderClassifiedList(out, {messages, classified}); 
+
+      renderClassifiedList(out, {messages, classified});
+      flashOutput(out);
+      showToast('Classification completed.', { type: 'success' });
+      succeeded = true;
     }
     else if (job === 'group-selected') {
       const result = await fetchJSON('/api/group-selected', { method: 'POST' });
       intents = result.intents;
-      setLoading(null, out, 'Completed.');
       out = outputEl('inbox')
       // fresh load: default to all actionable threads selected, start on the first page
       intentSelected = new Set(Object.keys(intents));
       intentPage = 0;
       renderIntentsList(out, { messages: result.messages, intents }, 0);
+      flashOutput(out);
+      showToast('Check intents completed.', { type: 'success' });
+      succeeded = true;
     }
 
-    
+
     else if (job === 'classify-all') {
       const result = await fetchJSON('/api/classify-all', { method: 'POST' });
       renderOk(out, `Done. Checked ${result.count} email(s).`);
@@ -364,7 +372,11 @@ async function runJob(job, btn) {
   } catch (err) {
     renderError(out, err.message);
   } finally {
-    resetLoading(btn, job === 'inbox' ? 'Run' : 'Run batch job');
+    if (succeeded) {
+      markCompleted(btn);
+    } else {
+      resetLoading(btn, job === 'inbox' ? 'Run' : 'Run batch job');
+    }
   }
 }
 
@@ -382,11 +394,45 @@ function setLoading(btn, out, label) {
   // button-only feedback: disables + relabels the clicked button so the user can tell their
   // click registered, without touching `out` (which used to get its content replaced with a
   // bare "Running..." line
-  if (btn) { btn.disabled = true; btn.dataset.originalText = btn.textContent; btn.textContent = label; }
+  if (btn) {
+    // starting a fresh run cancels any pending "revert on hover" from a previous completion,
+    // and must not capture the checkmark glyph itself as the button's "original" label
+    if (btn._completedRevert) { btn.removeEventListener('mouseenter', btn._completedRevert); btn._completedRevert = null; }
+    if (!btn.classList.contains('btn-completed')) { btn.dataset.originalText = btn.textContent; }
+    btn.classList.remove('btn-completed');
+    btn.disabled = true;
+    btn.textContent = label;
+  }
 }
 
 function resetLoading(btn, fallbackLabel) {
   if (btn) { btn.disabled = false; btn.textContent = btn.dataset.originalText || fallbackLabel; }
+}
+
+// Swaps a finished action button to a checkmark instead of straight back to its normal label,
+// so completion is visible even after the "Running..." state disappears. Re-hovering it peeks
+// back at the real label as a one-shot reveal (the button stays clickable throughout).
+function markCompleted(btn) {
+  if (!btn) return;
+  btn.disabled = false;
+  btn.classList.add('btn-completed');
+  btn.textContent = '✓';
+  const revert = () => {
+    btn.classList.remove('btn-completed');
+    btn.textContent = btn.dataset.originalText;
+    btn._completedRevert = null;
+  };
+  btn._completedRevert = revert;
+  btn.addEventListener('mouseenter', revert, { once: true });
+}
+
+// Briefly pulses an output panel's border to draw the eye to freshly-rendered content.
+function flashOutput(out) {
+  if (!out) return;
+  out.classList.remove('flash-new');
+  void out.offsetWidth; // force reflow so re-adding the class retriggers the animation
+  out.classList.add('flash-new');
+  out.addEventListener('animationend', () => out.classList.remove('flash-new'), { once: true });
 }
 
 function renderOk(out, message) {
@@ -394,15 +440,15 @@ function renderOk(out, message) {
   out.innerHTML = `<span class="ok-line">${escapeHTML(message)}</span>`;
 }
 
-// Errors surface as a bottom-of-screen toast (auto-dismisses after `ms`, or sooner if the user
-// closes it) rather than inline in the output panel, so a failed request doesn't leave a stray
-// error block sitting in the middle of the UI.
-function showErrorToast(message, ms = 15000) {
+// Toasts surface at the bottom of the screen (auto-dismiss after `ms`, or sooner if the user
+// closes them) rather than inline in the output panel, so a message doesn't leave a stray
+// block sitting in the middle of the UI. `type` is 'error' (default) or 'success'.
+function showToast(message, { type = 'error', ms = 15000 } = {}) {
   const stack = document.getElementById('toast-stack');
   if (!stack) return;
 
   const toast = document.createElement('div');
-  toast.className = 'toast';
+  toast.className = `toast toast-${type}`;
   toast.innerHTML = `
     <span class="toast-message"></span>
     <button class="toast-close" type="button" aria-label="Dismiss">&times;</button>
@@ -421,6 +467,10 @@ function showErrorToast(message, ms = 15000) {
     clearTimeout(timer);
     dismiss();
   });
+}
+
+function showErrorToast(message, ms = 15000) {
+  showToast(message, { type: 'error', ms });
 }
 
 // clears whatever the output panel was showing (e.g. a stale "Running…" line) and reports the
@@ -534,7 +584,7 @@ function renderReadingPaneContent(record) {
       <div class="reading-pane-head">
         <div class="reading-pane-head-text">
           <div class="reading-pane-subject">${escapeHTML(record.subject || '(no subject)')}</div>
-          <div class="reading-pane-meta">${escapeHTML(record.sender || '—')} · ${record.updated ? new Date(record.updated).toLocaleString() : '—'}</div>
+          <div class="reading-pane-meta">${escapeHTML(record.sender || '-')} · ${record.updated ? new Date(record.updated).toLocaleString() : '-'}</div>
           ${topicLine}${synopsisLine}${recipientsLine}
           ${selectToggle}
           ${modifyIntentBtn}
@@ -702,7 +752,7 @@ function renderModifyIntentBody() {
     } else if (row.kind === 'duplicate') {
       targetCell = `<span>${formatInterestedParty(row.target)}</span>`;
     } else {
-      targetCell = '<span>—</span>';
+      targetCell = '<span>-</span>';
     }
     return `<tr data-row-id="${row.id}">
       <td><span class="chip">${escapeHTML(row.intentName)}</span></td>
@@ -723,7 +773,7 @@ function renderModifyIntentBody() {
   ].filter(Boolean).join('');
 
   out.innerHTML = `
-    <p class="card-desc">Editing <strong>${escapeHTML(subject || '(no subject)')}</strong> — changes apply to the database once you click Save changes.</p>
+    <p class="card-desc">Editing <strong>${escapeHTML(subject || '(no subject)')}</strong> : changes apply to the database once you click Save changes.</p>
     <table class="mi-table">
       <thead><tr><th>Intent</th><th>Target</th><th></th></tr></thead>
       <tbody>${editableRows.map(rowMarkup).join('') || '<tr><td colspan="3"><em>No editable intents yet.</em></td></tr>'}</tbody>
@@ -740,7 +790,7 @@ function renderModifyIntentBody() {
           ${readonlyRows.map((r) => `<li><span class="chip">${escapeHTML(r.intentName)}</span> ${r.target != null ? formatInterestedParty(r.target) : ''}</li>`).join('')}
         </ul>
       </div>` : ''}
-    <p class="card-desc mi-caveat">Clearing a duplicate marking does not restore the original recipients/property data — add a forward target manually, or re-run Classify, if you want it routed again. Deleting a reminder just clears the pending date; the normal cadence proposes a fresh one on the next Check Intents run.</p>
+    <p class="card-desc mi-caveat">Clearing a duplicate marking does not restore the original recipients/property data. Add a forward target manually, or re-run Classify, if you want it routed again. Deleting a reminder just clears the pending date; the normal cadence proposes a fresh one on the next Check Intents run.</p>
     <div class="modal-actions">
       <button type="button" id="mi-cancel-btn" class="btn btn-ghost">Cancel</button>
       <button type="button" id="mi-save-btn" class="btn btn-primary">Save changes</button>
@@ -963,7 +1013,7 @@ function renderClassifiedList(out, items, page = 0) {
   currentRowIndex = new Map(ordered.map((entry) => {
     const m = messageById.get(entry.conversationId) || {};
     const c = entry.classification || {};
-    const topic = (c.subject?.main || c.subject?.sub) ? `${c.subject?.main || '—'} / ${c.subject?.sub || '—'}` : null;
+    const topic = (c.subject?.main || c.subject?.sub) ? `${c.subject?.main || '-'} / ${c.subject?.sub || '-'}` : null;
     return [entry.conversationId, toPaneRecord({
       convId: entry.conversationId, subject: m.subject, sender: m.sender, updated: m.updated,
       synopsis: c.important?.synopsis, topic,
@@ -985,17 +1035,17 @@ function renderClassifiedList(out, items, page = 0) {
 
   const rows = pageRows.map(({ conversationId, classification: c, recipients, similar }) => {
     const m = messageById.get(conversationId) || {};
-    const recipientNames = (recipients || []).map(r => escapeHTML(r[0])).join(', ') || '—';
+    const recipientNames = (recipients || []).map(r => escapeHTML(r[0])).join(', ') || '-';
     return `
       <tr data-convid="${escapeHTML(conversationId)}">
         ${idCell(conversationId)}
         <td>${escapeHTML(m.subject || '(no subject)')}</td>
-        <td>${escapeHTML(m.sender || '—')}</td>
-        <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
-        <td>${escapeHTML(c?.important?.synopsis || '—')}</td>
-        <td>${escapeHTML(c?.subject?.main || '—')} / ${escapeHTML(c?.subject?.sub || '—')}</td>
+        <td>${escapeHTML(m.sender || '-')}</td>
+        <td>${m.updated ? new Date(m.updated).toLocaleString() : '-'}</td>
+        <td>${escapeHTML(c?.important?.synopsis || '-')}</td>
+        <td>${escapeHTML(c?.subject?.main || '-')} / ${escapeHTML(c?.subject?.sub || '-')}</td>
         <td>${recipientNames}</td>
-        <td>${c?.important?.completed ? 'yes' : c ? 'no' : '—'}</td>
+        <td>${c?.important?.completed ? 'yes' : c ? 'no' : '-'}</td>
         <td>${similar ? 'possible duplicate' : ''}</td>
       </tr>`;
   }).join('');
@@ -1054,8 +1104,8 @@ function renderInbox(out, messages, page = 0) {
     <tr data-convid="${escapeHTML(m.conversationId)}">
       ${idCell(m.conversationId)}
       <td>${escapeHTML(m.subject || '(no subject)')}</td>
-      <td>${escapeHTML(m.sender || '—')}</td>
-      <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
+      <td>${escapeHTML(m.sender || '-')}</td>
+      <td>${m.updated ? new Date(m.updated).toLocaleString() : '-'}</td>
     </tr>`).join('');
 
   out.innerHTML = `<table>
@@ -1076,9 +1126,9 @@ function renderClassification(out, result) {
 
   out.innerHTML = `
     <div class="ok-line">${escapeHTML(result.important?.synopsis || 'Classified')}</div>
-    <div><strong>Subject:</strong> ${escapeHTML(result.subject?.main || '—')} / ${escapeHTML(result.subject?.sub || '—')}</div>
-    <div style="margin-top:6px;"><strong>Property:</strong> ${codes || '—'} ${lots}</div>
-    <div style="margin-top:6px;"><strong>Summary:</strong> ${escapeHTML(result.important?.summary || '—')}</div>
+    <div><strong>Subject:</strong> ${escapeHTML(result.subject?.main || '-')} / ${escapeHTML(result.subject?.sub || '-')}</div>
+    <div style="margin-top:6px;"><strong>Property:</strong> ${codes || '-'} ${lots}</div>
+    <div style="margin-top:6px;"><strong>Summary:</strong> ${escapeHTML(result.important?.summary || '-')}</div>
     <div style="margin-top:6px;"><strong>Completed:</strong> ${result.important?.completed ? 'yes' : 'no'}</div>
   `;
 }
@@ -1139,7 +1189,7 @@ function renderIntentsList(out, items, page = 0) {
   updateSearchSummary(visible.length, messages.length, 'threads');
 
   currentRowIndex = new Map(visible.map((m) => {
-    const topic = (m.subject_main || m.subject_sub) ? `${m.subject_main || '—'} / ${m.subject_sub || '—'}` : null;
+    const topic = (m.subject_main || m.subject_sub) ? `${m.subject_main || '-'} / ${m.subject_sub || '-'}` : null;
     return [m.conversation_id, toPaneRecord({
       convId: m.conversation_id, subject: m.subject, sender: m.sender, updated: m.updated,
       synopsis: m.synopsis, topic, recipients: m.intended_recipients, body: m.body,
@@ -1174,12 +1224,12 @@ function renderIntentsList(out, items, page = 0) {
           const color = intentColors[e.intent] || 'gray';
           return `<span style="background-color:${color};color:white;font-weight:bold;padding:1px 6px;border-radius:3px;display:inline-block;margin:1px;">${escapeHTML(e.intent)}</span>`;
         }).join(' ')
-      : '—';
+      : '-';
 
     const targets = entryList
       .map((e) => formatInterestedParty(e.interestedParty))
-      .filter((v) => v && v !== '—')
-      .join('; ') || '—';
+      .filter((v) => v && v !== '-')
+      .join('; ') || '-';
 
     // only actionable rows get a check box; execution honors every intent on the row
     const checkbox = hasIntent
@@ -1188,8 +1238,8 @@ function renderIntentsList(out, items, page = 0) {
 
     // classified topic from the previous step (subject bucket main / sub)
     const topic = (m.subject_main || m.subject_sub)
-      ? `${escapeHTML(m.subject_main || '—')} / ${escapeHTML(m.subject_sub || '—')}`
-      : '—';
+      ? `${escapeHTML(m.subject_main || '-')} / ${escapeHTML(m.subject_sub || '-')}`
+      : '-';
 
     // checkbox + ID are pinned (sticky) to the left of the horizontally-scrollable table, and
     // Intent sits right next to them, so the identifying info + what's about to happen stays
@@ -1200,10 +1250,10 @@ function renderIntentsList(out, items, page = 0) {
         ${idCell(m.conversation_id)}
         <td class="intent-cell">${intentChips}</td>
         <td>${escapeHTML(m.subject || '(no subject)')}</td>
-        <td>${escapeHTML(m.sender || '—')}</td>
-        <td>${m.updated ? new Date(m.updated).toLocaleString() : '—'}</td>
+        <td>${escapeHTML(m.sender || '-')}</td>
+        <td>${m.updated ? new Date(m.updated).toLocaleString() : '-'}</td>
         <td>${topic}</td>
-        <td>${escapeHTML(m.synopsis || '—')}</td>
+        <td>${escapeHTML(m.synopsis || '-')}</td>
         <td>${targets}</td>
       </tr>`;
   }).join('');
@@ -1343,7 +1393,7 @@ function renderInspect(out, info) {
       .filter(([k]) => !skip.includes(k))
       .map(([k, v]) => {
         let val = v;
-        if (v == null) val = '—';
+        if (v == null) val = '-';
         else if (k === 'body') val = String(v).slice(0, 300) + (String(v).length > 300 ? '…' : '');
         else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v)) val = new Date(v).toLocaleString();
         return `<tr><td class="kv-key">${escapeHTML(k)}</td><td>${escapeHTML(String(val))}</td></tr>`;
@@ -1358,7 +1408,7 @@ function renderInspect(out, info) {
     const body = rows
       .map((r) => `<tr>${cols.map((c) => {
         let v = r[c];
-        if (v == null) v = '—';
+        if (v == null) v = '-';
         else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v)) v = new Date(v).toLocaleString();
         return `<td>${escapeHTML(String(v))}</td>`;
       }).join('')}</tr>`)
@@ -1385,8 +1435,8 @@ function renderInspect(out, info) {
 }
 
 function formatInterestedParty(party) {
-  if (party == null) return '—';
-  if (Array.isArray(party)) return party.map(escapeHTML).join(', ') || '—';
+  if (party == null) return '-';
+  if (Array.isArray(party)) return party.map(escapeHTML).join(', ') || '-';
   if (party instanceof Date) return party.toLocaleString();
   // dates come back from JSON as ISO strings once they cross the fetch boundary
   if (typeof party === 'string' && !isNaN(Date.parse(party)) && /^\d{4}-\d{2}-\d{2}T/.test(party)) {

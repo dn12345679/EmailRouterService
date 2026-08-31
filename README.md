@@ -2,6 +2,8 @@
 
 An app that classifies emails with claude and performs actions like scheduling and sending reminders, marking possible duplicates, and routing to correct addresses.
 
+> See [ARCHITECTURE.md](ARCHITECTURE.md) for a full technical walkthrough of how the pieces fit together.
+
 **Classify Collected** (`insertIntoDB`)
 Pulls unique inbox threads, classifies each with Claude (subject bucket,
 conditions, property/lot, synopsis, completion, reminder type, deadline), routes
@@ -59,7 +61,7 @@ sender to identify the property.
   message (kept checkable in the DB).
 - **needs_info** - Claude couldn't identify the property code and/or lot (and the
   thread isn't Misc, a duplicate, or already forwarded). The thread is **still
-  routed and reminded normally** -- routing rarely depends on the property/lot --
+  routed and reminded normally** 
   and this just adds one extra reply to the original sender asking them to specify
   the Property Code and Lot number. Because it only fires while the thread is
   un-forwarded, the sender is asked once.
@@ -164,34 +166,37 @@ CREATE INDEX idx_synopsis_trgm ON email USING GIST (synopsis gist_trgm_ops);
 
 
 
-### setup (important)
+### setup (running from source)
 
 1. `npm install`
-2. Create/upgrade the DB: Copy the schema into psql.
-3. Ensure `config/config.js` exists and is filled in (it is not committed). 
-4. `propertyToRegion.json` is a json containing the mapping from lot to location for every property. This is used for classifying properties. The information contained in this file is all publicy availble online.
-5. Configure your `.env` file:
-
-  ```
-EML_CLIENT_ID = "Graph-api-client-id"
-EML_TENANT_ID= "Graph-api-tenant-id"
-EML_CLIENT_SECRET= "Graph-api-client-secret"
-EML_EMAIL = "user-signing-in@internal_domain.com"
-
-DB_HOST = localhost
-DB_PORT = 5442
-DB_NAME = email_router
-DB_PW = "my-password"
-DB_USER = "postgres"
-
-ANTHROPIC_API_KEY = "my-claude-api"
-
-INTERNAL_DOMAIN = "internaldomain.com"
-
-  ```
-
+2. Create/upgrade the DB: copy the schema above into `psql`.
+3. Copy `config/config.example.js` to `config/config.js` and fill in your own
+   `SUBJECT_BUCKETS` / `CONDITION_BUCKETS` / `ROUTING_CONFIG` (it is not committed).
+4. `propertyToRegion.json` maps property/lot to location and region, used when classifying
+   properties. The default in this repo is public information; edit it directly if your own
+   property list differs.
+5. Copy `.env.example` to `.env` and fill in your own values (Graph API credentials, DB
+   connection, your own Anthropic API key, internal domain).
 6. `mail.readwrite` was added to the Graph scopes (needed to move messages to
    Archive). If you've signed in before, delete the cached `auth-record.json`
    (in Electron's userData dir) so you're re-prompted to consent.
 7. Start the app and sign in, the sign in will be auto cached.
+
+
+### Configuring an already-installed copy (no rebuild needed)
+
+Secrets and business config are never baked into the installer. A packaged app looks for these
+files in the **same folder as the installed executable**, and ships a ready-to-copy template of
+each one there so you don't need to dig through this repo to fill them in:
+
+| File to create | Copy from the template | Required? |
+|---|---|---|
+| `.env` | `.env.example` | Yes -> the app won't start without it |
+| `config.js` | `config.example.js` | Yes -> must define `SUBJECT_BUCKETS` / `CONDITION_BUCKETS` / `ROUTING_CONFIG` |
+| `propertyToRegion.json` | `propertyToRegion.example.json` | No -> falls back to the bundled default if omitted |
+
+Unlike `config/config.js` in this repo (a full JS class extending `RouterConfig`), the
+installed-app `config.js` template is a plain object. see the comments in
+`config.example.js` for the full list of optional overrides (message templates, thresholds,
+ignored-sender patterns, etc.).
 

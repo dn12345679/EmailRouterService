@@ -2,7 +2,14 @@ import pg from "pg";
 import dotenv from 'dotenv';
 const {Pool, Client} = pg
 import { load } from 'cheerio';
-import { CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG, REMOVE_SENDER_ON_ESCALATION, NEEDS_INFO_CONFIG, UNCLASSIFIABLE_CONFIG } from "./appsettings.js";
+import {
+  CONDITION_BUCKETS, ROUTING_CONFIG, SUBJECT_BUCKETS, REMINDER_CONFIG, REMOVE_SENDER_ON_ESCALATION,
+  NEEDS_INFO_CONFIG, UNCLASSIFIABLE_CONFIG, ESCALATE_AFTER_REMINDERS_DEFAULT, DUPLICATE_SIMILARITY_THRESHOLD,
+  CLASSIFICATION_EXAMPLE as EXAMPLE, CLASSIFICATION_PROMPT as PROMPT, CLOSING_MESSAGE, DUPLICATE_CLOSING_MESSAGE,
+  THREAD_COMPLETE_MESSAGE, REMINDER_MESSAGE, NO_CODE_TOKEN as NO_CODE, NO_LOT_TOKEN as NO_LOT,
+  MAX_PROPERTY_CODE_LEN, UNCLASSIFIABLE_SUBJECT_LABEL as UNCLASSIFIABLE_SUBJECT, IGNORED_SENDER_PATTERNS,
+  SUPERVISORS_ROUTING_KEY,
+} from "./appsettings.js";
 import {
   getConversationMessagesAsync,
   extractBodyTextWithCheerio,
@@ -24,12 +31,24 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const region_tracker = path.join(__dirname, 'propertyToRegion.json');
-const response = await fs.readFile(region_tracker, 'utf8');
+// PROPERTY_REGION_FILE_PATH is set by main.js when running as a packaged Electron app, pointing
+// at a propertyToRegion.json dropped next to the installed executable. This lets the property/region
+// list be updated post-install without a rebuild. Fallback is the default
+async function loadPropertyRegionData() {
+  const bundledPath = path.join(__dirname, 'propertyToRegion.json');
+  const externalPath = process.env.PROPERTY_REGION_FILE_PATH;
+  if (externalPath) {
+    try {
+      return JSON.parse(await fs.readFile(externalPath, 'utf8'));
+    } catch (err) {
+      console.error(`Could not load external propertyToRegion.json at ${externalPath} (${err.message}); falling back to the bundled default.`);
+    }
+  }
+  return JSON.parse(await fs.readFile(bundledPath, 'utf8'));
+}
 
-
-// from propertyToRegion.json (see above), i deleted entries for hurst and son, hurst and son office, and the romack entries
-const data = JSON.parse(response);
+// from propertyToRegion.json (see above), i deleted a few entries
+const data = await loadPropertyRegionData();
 const PROPERTY_CODES = new Set(
   (data ?? [])
     .map(o => o?.['Community Code'])
@@ -62,115 +81,11 @@ const pool = new Pool({
 
 
 
-export const EXAMPLE = 
-`
-{
-  "subject": {
-    "main": "Maintenance",
-    "sub": "Utilities and Infrastructure"
-  },
-  "conditions": {
-    "northDakota": false,
-    "eastGroup": false,
-    "westGroup": false,
-    "unusualWaterBill": false,
-    "tenantNonCompliance": false,
-    "significantSafetyIssue": false,
-    "minorSafetyIssue": false,
-    "normalRuleViolation": false,
-    "companySellingHome": false,
-    "employeeExpenseOrTimeOff": false
-  },
-  "property": {
-    "location": ["Bakerview Estates"],
-    "code": ["BV"],
-    "lot": ["99"]
-  },
-  "important": {
-    "synopsis": "BV 99 Pavement Path Damaged",
-    "summary": "this is a summary of the email in 10 words or less",
-    "completed": false,
-    "removeFromThread": [],
-    "reminderType": "Miscellaneous",
-    "forwardingNotNeeded": false,
-    "scheduledReminder": "MM/DD/YYYY" or "-"
-  }
-}
-`
+// EXAMPLE, PROMPT, CLOSING_MESSAGE, DUPLICATE_CLOSING_MESSAGE, THREAD_COMPLETE_MESSAGE,
+// REMINDER_MESSAGE, NO_CODE, NO_LOT, MAX_PROPERTY_CODE_LEN, UNCLASSIFIABLE_SUBJECT, and
+// IGNORED_SENDER_PATTERNS are all defaults from config/RouterConfig.js
 
-export const TEST_EMAIL = `The pipes in bakerview lot 99 are currently undergoind maintenance. Avoid using excessive water for now.`
-
-export const PROMPT = (SUBJECTS, MESSAGE, SUBJECT_LINE, CONDITIONS, TEMPLATE, REMINDERS, COMMUNITIES) =>
-`Given the email below, classify it into the predefined subject buckets provided here: ${SUBJECTS} \n
-
-Email Message to classify:\n ${MESSAGE}
-Email Subject Line: \n ${SUBJECT_LINE}
-
-Community list (each line is "CODE = Community Name [Region]"). This is the authoritative list of
-every property/community; a property code is ONLY valid if it appears here:
-${COMMUNITIES}
-
-Instructions:
-1. Compute a probability for every top-level subject and bottom-level subcategory, and return the main subject and the most likely subcategory under "subject.main" and "subject.sub". Pay attention to the order that
-the emails in the chain are in, as noted by the date and time of received. The messages in the thread may not have been ordered in sequential time.
-2. Evaluate every condition independently. It is not required to figure out if the region is North Dakota or eastGroup or westGroup, but fill if possible. Return true if the likelihood is at least 0.5; otherwise return false. The conditions are here: ${CONDITIONS}
-3. Property identification. Using the Community list above, work out WHICH community the email is about and return it. Tenants routinely refer to a community by an informal, partial, or old name (e.g. "Jefferson Mobile Home Park" -> "Jefferson Community LLC", "the Bakerview park" -> "Badger Lake Estates", "Aero MHP" -> "Aero Community LLC"), so match by meaning, not exact wording. Then, if relevant and not just a brief mention, return:
-   - Property Location: the matched Community Name(s) from the list, array format, e.g. ["Badger Lake Estates LLC"].
-   - Property Code: the EXACT 2-letter Community Code(s) from the list for the matched community/communities, array format, e.g. [BV, AP]. Use ONLY codes that appear in the list above. If you cannot confidently match any community, return an empty array [] (do not guess a code that is not in the list).
-   - Lot Number enclosed in array format regardless of count []. If there are multiple Lot numbers, List them in an array format. And if they are associated with a Property Code, prefix it. For example: [BV_83, AP_21, none_14, BV_99]
-4. Write a short summary consisting of a few sentences or words. Add the summary content as a string in the "summary" property under "important". 
-5. Under the "completed" field in "important", Set completed = true if the thread reaches a clear resolution, specifically from the initial sender or all involved parties (e.g. "looks good", "thanks for completing this", or similar  closing acknowledgment) AND no message after that point raises  a new problem or requests further action. Otherwise, completed = false.
-6. Under "removeFromThread" field in "important", there is an empty array. If at any point in the thread a recipient requests to have their email removed from the thread, add their 
-7. Under "synopsis" field in "important", create a string of around 5-6 words t
-hat fits as a title of the email in the form: 
- Property Code + Lot Number + Subjects + Adjective/Description. For example "AR 42 Increase Rescission Delivered"
- If there are multiple property codes or lot numbers, List them like this: "BV 99, AD 23, ..."
- If there is no valid property code, lot number, then just write "ANY" + Subjects + Description.
-8. Under "reminderType" in "important", classify it based on the types of reminders here: ${Object.keys(REMINDERS)}. By default, everything will be "Miscellaneous".
-9. Under "scheduledReminder" in "important", if there is a mention of a specific deadline(s), choose the one from the most recent email, and assign that value in the MM/DD/YYYY format to this property. Otherwise leave as "-".
-10. Under "forwardingNotNeeded" in "important", set this to true ONLY if the email explicitly states (do not assume) that forwarding is unnecessary or that it has already been sent to the correct recipient(s) 
-   (e.g. "this does not need to be forwarded", "already sent to the right people", "no need to forward this"). 
-   Do not infer this from context or assume it based on who is included - only set true if the email says so directly. Otherwise, set false.
-11. Return only a valid JSON string matching the format with example values shown below (Actual Conditions and Subjects may not match the template exactly due to changes in structure). Do not include any explanations or extra content, just fill out the JSON.
-
-${TEMPLATE}
-
-`
-
-// used to close both duplicates and finalizing threads.
-export const CLOSING_MESSAGE = (classification) => 
-  `
-    This thread has been marked as complete. Thank you for your responses.
-    Synopsis: ${classification.important.synopsis || 'N/A'}
-    Summary: ${classification.important.summary || 'N/A'}
-  ` 
-
-
-const NO_CODE = 'none';
-const NO_LOT = 'unspecified';
-const MAX_PROPERTY_CODE_LEN = 10; // matches email_property.property_code varchar(10)
-
-// seperate bucket for emails that contain stuff that cant be read, like images
-const UNCLASSIFIABLE_SUBJECT = 'Unclassifiable email';
-
-// TODO: move this to config
-const DUPLICATE_CLOSING_MESSAGE = 'This message has been marked as a duplicate. Closing this thread.';
-const THREAD_COMPLETE_MESSAGE = 'This thread has been marked as complete. Thank you.';
-const REMINDER_MESSAGE = (due_date) =>  `Has the assigned tasks been completed? ${due_date}`;
-const supervisorsEmail = () => ROUTING_CONFIG['Supervisors']?.email ?? null;
-
-
-
-// IGNORE all of the incoming emails that have this
-const IGNORED_SENDER_PATTERNS = [
-  /no-?reply@/i,
-  /do-?not-?reply@/i,
-  /don'?treply@/i,
-  /notifications?@/i,
-  /mailer-daemon@/i,
-  /postmaster@/i,
-  /@.*\.?teams\.microsoft\.com$/i,
-];
+const supervisorsEmail = () => ROUTING_CONFIG[SUPERVISORS_ROUTING_KEY]?.email ?? null;
 
 // see above: ignores everybody that is here
 export function isIgnoredSender(sender) {
@@ -386,10 +301,10 @@ async function find_similar_synopsis(client, synopsis, propertyCodes, lots, subj
       AND LOWER(e.sender) = LOWER($7)     -- same sender only (don't merge different tenants on one lot)
       AND e.duplicate_of IS NULL          -- only match a canonical original, never another duplicate
       AND e.status <> 'complete'          -- don't fold into / reopen an already-finished thread
-      AND similarity(e.synopsis, $1) > 0.3
+      AND similarity(e.synopsis, $1) > $8
     ORDER BY score DESC
     LIMIT 1;
-  `, [synopsis, codesArr, lotsArr, subjectMain, subjectSub, currentConversationId, sender]);
+  `, [synopsis, codesArr, lotsArr, subjectMain, subjectSub, currentConversationId, sender, DUPLICATE_SIMILARITY_THRESHOLD]);
 
   return result.rows[0] ?? null;
 }
@@ -496,11 +411,7 @@ export async function getReadEmailsWithIntents() {
 
     // INTENT (UNCLASSIFIABLE): has the sender already been asked for context once?
     // Tracked via the sender-anchor recipient row's reminder_count rather than
-    // `forwarded` -- `forwarded` is sticky (OR'd with its old value on every
-    // reclassification, see insertIntoDB), so if we used it here it would get
-    // pinned true after the first "please give context" reply and could never be
-    // un-set once the sender actually replies with real info, silently preventing
-    // the eventual real forward to the routed recipients.
+    // `forwarded` 
     const unclassifiableContactedSet = new Set();
     if (messages.some(m => m.subject_main === UNCLASSIFIABLE_SUBJECT)) {
       const convIds = messages
@@ -857,9 +768,7 @@ export async function executeIntents(conversationIds = null, { dryRun = true } =
 
 
 // Manual override path for "Modify Intent" (see public/app.js openModifyIntent). Each key below
-// writes to the exact same column/table that getReadEmailsWithIntents() and executeIntents()
-// already read, so no changes are needed to intent computation or execution -- editing here is
-// indistinguishable from the thread having naturally arrived in that state.
+// writes to the exact same column/table that getReadEmailsWithIntents() and executeIntents() read
 //   changes: {
 //     forwardAdd?: string[], forwardRemove?: string[],   // recipients.intended_recipient rows
 //     complete?: boolean,                                  // email.flagged_complete
@@ -892,8 +801,8 @@ export async function modifyIntent(conversationId, changes = {}) {
           ON CONFLICT (conversation_id, intended_recipient) DO NOTHING
         `, [conversationId, addr, sentDate]);
       }
-      // a manually added recipient needs a fresh routing pass -- otherwise the forward branch in
-      // executeIntents (gated on !m.forwarded) would never fire for them.
+
+      // so forward branch in executeIntents (gated on !m.forwarded) wont fire
       await client.query(`UPDATE email SET forwarded=false WHERE conversation_id=$1`, [conversationId]);
     }
 
@@ -923,7 +832,7 @@ export async function modifyIntent(conversationId, changes = {}) {
   }
 
   // recompute fresh so the caller can refresh just this thread's row/reading-pane without a
-  // full "Check intents" round-trip
+  // full "Check intents" 
   const { messages, intents } = await getReadEmailsWithIntents();
   return {
     message: messages.find(m => m.conversation_id === conversationId) ?? null,
@@ -1007,13 +916,11 @@ function parsePropertyPairs(codes, lots) {
     }
   }
 
-  // remaining bare codes: real codes always. stray tokens only when unfoldable
+  // stray tokens only when unfoldable
   // (ambiguous multi-code cases are left as-is rather than guessed)
   const leftoverCodes = foldStrays ? realCodes : rawCodes;
   for (const code of leftoverCodes) {
-    // a token this long can never be a real property code (they're all short community
-    // codes) -- it's classifier noise from the ambiguous case above. Drop it instead of
-    // letting it hit the property_code varchar(10) column and crash the insert.
+  
     if (!isRealPropertyCode(code) && code.length > MAX_PROPERTY_CODE_LEN) continue;
     if (!pairs.some(p => p.code === code)) {
       pairs.push({ code, lot: NO_LOT });
@@ -1083,7 +990,7 @@ function determineReminderAction(recipientRow, config) {
 
   if (!reminderDue) return 'none';
 
-  return recipientRow.reminder_count >= (config.escalateAfterReminders ?? 9) ? 'supervisor' : 'reminder_due';
+  return recipientRow.reminder_count >= (config.escalateAfterReminders ?? ESCALATE_AFTER_REMINDERS_DEFAULT) ? 'supervisor' : 'reminder_due';
 }
 
 
@@ -1437,7 +1344,7 @@ export async function checkReminders(emails, intents) {
       const config = REMINDER_CONFIG[row.reminder_type] ?? REMINDER_CONFIG["Miscellaneous"];
       const now = new Date();
       const pastTargetDate = config.completeByDate && row.target_date && now > new Date(row.target_date);
-      const escalateAfter = config.escalateAfterReminders ?? 9; // hard coded value default 9 reminder to escalation
+      const escalateAfter = config.escalateAfterReminders ?? ESCALATE_AFTER_REMINDERS_DEFAULT;
 
 
 

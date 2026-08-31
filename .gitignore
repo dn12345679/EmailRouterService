@@ -3,11 +3,9 @@ node_modules
 CSV
 dist
 config/config.js
-ARCHITECTURE.md
-public/img/LordshipWhiteboard.jpg
+public/img/logo.png
 
 
-# auth / token caches — never commit these
 token_cache.json
 auth-record.json
 *.token
