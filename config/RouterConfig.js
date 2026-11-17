@@ -1,9 +1,9 @@
 export const DEFAULT_REMINDER_CONFIG = {
   "Screening Only": {
     mode: "repeat",
-    anchor: "last_response",   // reset clock when party replies to email
+    anchor: "last_response",  
     interval_days: 2,
-    stopWhen: "complete",      // task complete
+    stopWhen: "complete",     
   },
   "Screening with Completed and Generated Lease": {
     mode: "repeat_or_anchor",
@@ -18,12 +18,12 @@ export const DEFAULT_REMINDER_CONFIG = {
     deadlineOffsets: [2, 1, 0],
     fallbackIntervalDays: 1,
     stopWhen: "complete",
-    completeByDate: true,   // once target_date passes, escalate to Supervisors
+    completeByDate: true,  
   },
   "Intent to Vacate": {
     mode: "single_anchor",
     anchorField: "target_date",
-    completeByDate: true,   // once target_date passes, escalate to Supervisors
+    completeByDate: true,   
   },
   "Miscellaneous": {
     mode: "repeat",
@@ -31,50 +31,47 @@ export const DEFAULT_REMINDER_CONFIG = {
     interval_days: 7,
     stopWhen: "complete",
   },
-  // Contentless / image-only forwards that couldn't be classified. There's no deadline, so we
-  // nudge the sender for context on a fixed cadence and escalate to Supervisors after a few
-  // unanswered nudges (see escalateAfterReminders).
+  
   "Unclassifiable": {
     mode: "repeat",
     anchor: "assigned",
     interval_days: 3,
     stopWhen: "complete",
-    escalateAfterReminders: 3,   // escalate to Supervisors once this many nudges go unanswered
+    escalateAfterReminders: 3,  
   },
 };
 
+
+// ask for info unless it is miscellaneous
 export const DEFAULT_NEEDS_INFO_CONFIG = {
   enabled: true,
-  // subject buckets that never need a property/lot 
   skipSubjects: ["Miscellaneous"],
-  // which identifiers are required, prompt when a required one is missing
   requirePropertyCode: true,
   requireLot: true,
   message:
     "Thank you for your inquiry, but would you be able to specify the Property Code and Lot number for identification?",
 };
 
+
+
+// enable when there is concern that emails will have little to no classifiable content (like an img)
 export const DEFAULT_UNCLASSIFIABLE_CONFIG = {
   enabled: true,
-  // A forwarded image / contentless thread: too little text to discern a topic AND no
-  // property/lot found. Full parsed chain shorter than maxChars (with no code/lot) is treated
-  // as unclassifiable and routed to the "ask the sender for context" flow instead of a bucket.
   maxChars: 50,
   reminderType: "Unclassifiable",
   message:
     "Context not found. Please reply with the subject, property, and lot so this can be routed.",
 };
 
-// Fallback used when a REMINDER_CONFIG entry doesn't set its own escalateAfterReminders
-// (e.g. "Screening Only", "Miscellaneous" above never set one).
-export const DEFAULT_ESCALATE_AFTER_REMINDERS = 9;
 
-// How closely a new email's synopsis has to match an existing open thread's (0-1, via
-// Postgres pg_trgm similarity()) before it's flagged as a possible duplicate of it.
+
+export const DEFAULT_ESCALATE_AFTER_REMINDERS = 9; // then supervisor
+
+
+// for duplicate matching in postgres trigram matching, should be at least this similar to count, can tune if necessary
 export const DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD = 0.3;
 
-// Shown to the classifier LLM as a worked example of the exact JSON shape it must return.
-// Keep the field names/shape in sync with what classify_email() (dbManager.js) expects back.
+// example format
 export const DEFAULT_CLASSIFICATION_EXAMPLE =
 `
 {
@@ -111,9 +108,8 @@ export const DEFAULT_CLASSIFICATION_EXAMPLE =
 }
 `;
 
-// The actual classification prompt sent to the LLM. Called as
-// CLASSIFICATION_PROMPT(subjectsJSON, messageText, subjectLine, conditionsJSON, exampleTemplate,
-// reminderConfig, communityList). see classify_email() in dbManager.js.
+// The actual classification prompt sent to the LLM in dbManager.js
+// CLASSIFICATION_PROMPT(subjectsJSON, messageText, subjectLine, conditionsJSON, exampleTemplate, reminderConfig, communityList).
 export const DEFAULT_CLASSIFICATION_PROMPT = (SUBJECTS, MESSAGE, SUBJECT_LINE, CONDITIONS, TEMPLATE, REMINDERS, COMMUNITIES) =>
 `Given the email below, classify it into the predefined subject buckets provided here: ${SUBJECTS} \n
 
@@ -151,8 +147,7 @@ ${TEMPLATE}
 
 `;
 
-// Sent back to the thread (via reply-all) once a thread is marked complete or closed as a
-// duplicate. `classification` is the LLM classification object for the thread being closed.
+
 export const DEFAULT_CLOSING_MESSAGE = (classification) =>
   `
     This thread has been marked as complete. Thank you for your responses.
@@ -164,19 +159,17 @@ export const DEFAULT_DUPLICATE_CLOSING_MESSAGE = 'This message has been marked a
 export const DEFAULT_THREAD_COMPLETE_MESSAGE = 'This thread has been marked as complete. Thank you.';
 export const DEFAULT_REMINDER_MESSAGE = (due_date) => `Has the assigned tasks been completed? ${due_date}`;
 
-// Placeholder tokens used internally when a thread has no property code / lot number.
+// Placeholder tokens used internally when a thread has no property code / lot number
 export const DEFAULT_NO_CODE_TOKEN = 'none';
 export const DEFAULT_NO_LOT_TOKEN = 'unspecified';
 
-// Matches the email_property.property_code column width (see config/schema.txt). if you raise
-// this, widen that column too, or valid codes longer than the old limit will get silently dropped.
+
 export const DEFAULT_MAX_PROPERTY_CODE_LEN = 10; // IE: ALTER COLUMN IN DB FIRST BEFORE CHANGING
 
-// subject.main/subject.sub value used for contentless/image-only threads that can't be
-// classified into a real bucket (see UNCLASSIFIABLE_CONFIG above).
+
 export const DEFAULT_UNCLASSIFIABLE_SUBJECT_LABEL = 'Unclassifiable email';
 
-// Incoming mail from any of these senders is ignored entirely (never classified/routed).
+// Incoming mail from any of these senders is ignored entirely
 export const DEFAULT_IGNORED_SENDER_PATTERNS = [
   /no-?reply@/i,
   /do-?not-?reply@/i,
@@ -187,10 +180,12 @@ export const DEFAULT_IGNORED_SENDER_PATTERNS = [
   /@.*\.?teams\.microsoft\.com$/i,
 ];
 
-// Which ROUTING_CONFIG entry is treated as "Supervisors" for escalation (hard deadlines blown,
-// too many unanswered reminders, etc). Must match a key in your ROUTING_CONFIG.
+// Which ROUTING_CONFIG entry is treated as "Supervisors" for escalation 
+// REQUIREMENT: Matches a key in the ROUTERCONFIG object
 export const DEFAULT_SUPERVISORS_ROUTING_KEY = 'Supervisors';
 
+
+// ROUTERCONFIG object
 export class RouterConfig {
   constructor() {
     this.SUBJECT_BUCKETS = null;
@@ -218,6 +213,7 @@ export class RouterConfig {
   }
 
 
+  // checks that the required buckets actually exist
   validate() {
     const required = ['SUBJECT_BUCKETS', 'CONDITION_BUCKETS', 'ROUTING_CONFIG'];
     for (const key of required) {

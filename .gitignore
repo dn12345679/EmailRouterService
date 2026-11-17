@@ -4,7 +4,8 @@ CSV
 dist
 config/config.js
 public/img/logo.png
-
+ARCHITECTURE.md
+propertyToRegion.json
 
 token_cache.json
 auth-record.json

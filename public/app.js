@@ -15,14 +15,11 @@ let messages = []; // list of UNIQUE message objects
 let classified = [];
 let intents = [];
 
-// --- search / filter state (applies to whichever table is currently rendered) ---
+
 const searchState = { keyword: '', party: '', intent: '', dueFrom: '', dueTo: '' };
 // each render sets this so the search bar can re-render the active view from page 0
 let rerenderCurrent = () => {};
 
-// --- reading pane state ---
-// Clicking a row (not its checkbox) opens a thread preview -- a SEPARATE selection concept from
-// intentSelected (the checkbox-driven "tick these for Submit & Save" set below).
 let selectedConvId = null;
 // convId -> normalized {convId, subject, sender, updated, synopsis, topic, recipients, body},
 // rebuilt by every render*() from whatever's currently visible (post-search-filter) in that view.
@@ -30,9 +27,7 @@ let currentRowIndex = new Map();
 // signed-in mailbox address, used only to decide which side a bubble renders on
 let signedInEmail = null;
 
-// --- Modify Intent popup state ---
-// { conversationId, subject, rows, originalRows } while the popup is open, else null. Each row:
-// { id, kind: 'forward'|'complete'|'duplicate'|'reminder'|'readonly', intentName, target, editable, isNew }
+
 let modifyIntentState = null;
 // [{ name, email }, ...] from ROUTING_CONFIG, fetched once and cached for the forward-target dropdown
 let routingConfigCache = null;
@@ -483,12 +478,6 @@ function renderError(out, message) {
 
 
 
-// --- Reading pane ---
-//
-// graphHelper.getUniqueMessages() joins a whole thread into one string, one block per message:
-//   [<receivedDateTime> - <sender address>]:\n<text>\n\n---\n\n[<date> - <sender>]:\n<text>...
-// This is the same `body` column the DB stores. Splitting on the "---" separator and pulling the
-// header out of each block is enough to reconstruct the thread as a sequence of messages.
 function parseThreadBody(body) {
   if (!body || !body.trim()) return [];
   return body.split(/\n\n---\n\n/).map((chunk) => {
@@ -498,13 +487,6 @@ function parseThreadBody(body) {
   }).filter((seg) => seg.text);
 }
 
-// extractBodyTextWithCheerio() (graphHelper.js) uses cheerio's $.text(), which -- unlike a
-// browser rendering HTML -- does NOT collapse whitespace: every literal newline/space/tab from
-// the source markup survives verbatim. A table-laid-out HTML email (marketing templates
-// especially) can have dozens of empty cells, each contributing a blank line, so the extracted
-// text is riddled with long runs of blank lines between the few lines that have real content.
-// This normalizes it the way a browser would: collapse in-line whitespace runs, and cap
-// consecutive blank lines at one, without touching intentional paragraph breaks.
 function cleanExtractedText(text) {
   return text
     .split('\n')
@@ -514,10 +496,7 @@ function cleanExtractedText(text) {
     .trim();
 }
 
-// The three views store their row data in different shapes (raw Graph-fetch object, a
-// classify-result entry + its source message, or a DB row from the intents query). Each
-// render*() normalizes its rows to this common shape so the pane renderer doesn't need to know
-// which view it came from.
+
 function toPaneRecord({ convId, subject, sender, updated, synopsis, topic, recipients, body, intentList, isIntentsView }) {
   return {
     convId, subject, sender, updated, synopsis: synopsis || null, topic: topic || null,
@@ -1167,8 +1146,8 @@ function renderIntentsList(out, items, page = 0) {
     setGroupByVisible(false);
     return;
   }
-  // "Group by" lives as a static control in the search bar now (not rendered inline here); just
-  // reveal it and keep its displayed value in sync with the sort mode
+
+
   setGroupByVisible(true);
   const groupBySel = document.getElementById('group-by-select');
   if (groupBySel) groupBySel.value = intentSort;
@@ -1184,7 +1163,7 @@ function renderIntentsList(out, items, page = 0) {
     'unclassifiable': 'dimgray'
   };
 
-  // apply the search filter (keyword / involved party / intent / due-date range) before sorting + paging
+
   const visible = messages.filter((m) => rowMatchesSearch(m, intents[m.conversation_id] ?? []));
   updateSearchSummary(visible.length, messages.length, 'threads');
 
@@ -1292,15 +1271,13 @@ function getSelectedConvIds() {
 }
 
 
-// actual execution -- renders into the Submit & Save modal (see wireExecuteModal below)
+
 function renderExecutionReport(out, report, confirmIds) {
   out.classList.remove('err');
   const results = report?.results || [];
 
   if (!results.length) {
-    // Empty results means the server found no CURRENT thread matching the ticked conversation
-    // IDs -- e.g. a stale selection from before a re-fetch/re-classify. Spelled out explicitly
-    // rather than a bare "Nothing to do." so it can't read as "the button did nothing".
+
     out.innerHTML = '<div class="ok-line">No matching threads for the current selection. '
       + 'Run <strong>Check intents</strong> again and re-tick the rows you want, then Submit &amp; Save.</div>';
     return;
@@ -1359,10 +1336,6 @@ function renderExecutionReport(out, report, confirmIds) {
   }
 }
 
-// Kept up to date by renderIntentsList() itself, so a successful execution can prune the
-// just-processed rows out of the CURRENTLY DISPLAYED intents table without needing a fresh
-// "Check intents" round-trip (the server-side data is of course also now stale for those rows,
-// but a full re-fetch isn't required just to stop the user from re-submitting the same action).
 let lastIntentsItems = null;
 
 function removeExecutedThreadsFromView(convIds) {
@@ -1466,7 +1439,6 @@ async function fetchJSON(url, options = {}) {
   return data;
 }
 
-// --- search bar + inspect toggle wiring ---
 
 function debounce(fn, ms) {
   let t;
@@ -1505,9 +1477,7 @@ function wireSearch() {
   });
 }
 
-// Generic controller for a `.modal-overlay` / `.modal` pair: open/close with the enter/exit
-// animation (matching the .closing keyframes in style.css) and backdrop-click-to-close. Returns
-// isOpen() so a shared Escape-key handler can close whichever modal is topmost.
+
 function createModal(overlayId, { openBtnId, closeBtnId, onOpen, onClose } = {}) {
   const overlay = document.getElementById(overlayId);
   const openBtn = openBtnId ? document.getElementById(openBtnId) : null;
@@ -1525,9 +1495,6 @@ function createModal(overlayId, { openBtnId, closeBtnId, onOpen, onClose } = {})
     onOpen?.();
   };
 
-  // Play the exit animation first, then actually hide. A timer (rather than the animationend
-  // event) drives this on purpose: under prefers-reduced-motion the animation is disabled and
-  // animationend would never fire, which would leave the modal stuck open.
   const close = () => {
     if (overlay.classList.contains('hidden') || overlay.classList.contains('closing')) return;
     onClose?.();
@@ -1553,17 +1520,13 @@ const inspectModal = createModal('inspect-overlay', {
   onOpen: () => document.getElementById('inspect-ids')?.focus(),
 });
 const executeModal = createModal('execute-overlay', { closeBtnId: 'execute-close' });
-// opened programmatically from the reading pane's "Modify Intent" button (see openModifyIntent),
-// not from a static ribbon/toolbar button -- hence no openBtnId here. onClose covers every way
-// the modal can go away (Cancel button, backdrop click, Escape, the × button) so unsaved edits
-// are always discarded.
+
 const modifyIntentModal = createModal('modify-intent-overlay', {
   closeBtnId: 'modify-intent-close',
   onClose: () => { modifyIntentState = null; },
 });
 
-// Escape closes whichever modal is topmost; if neither is open, it falls through to closing the
-// reading pane (which has its own selectedConvId check so this is a no-op when nothing is open).
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (modifyIntentModal.isOpen()) { modifyIntentModal.close(); return; }
@@ -1572,8 +1535,7 @@ document.addEventListener('keydown', (e) => {
   if (selectedConvId) closeReadingPane();
 });
 
-// "Group by" now lives as a static control in the search bar (moved out of the intents table
-// itself) -- wired once here, rather than re-wired on every renderIntentsList() call.
+
 document.getElementById('group-by-select')?.addEventListener('change', (e) => {
   intentSort = e.target.value;
   rerenderCurrent(); // rerenderCurrent always points at the active view's render() at this point

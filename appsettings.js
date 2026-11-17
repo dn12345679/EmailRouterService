@@ -6,17 +6,11 @@ import { RouterConfig } from './config/RouterConfig.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ENV_FILE_PATH / CONFIG_FILE_PATH are set by main.js when running as a packaged Electron app,
-// pointing at files dropped next to the installed executable (never inside the asar bundle),
-// so secrets and business config are supplied post-install instead of baked into the build.
+// ENV_FILE_PATH / CONFIG_FILE_PATH are set in main.js
 dotenv.config({ path: process.env.ENV_FILE_PATH || path.join(__dirname, '.env') });
 
 let userConfig;
 if (process.env.CONFIG_FILE_PATH) {
-  // The external file is plain data, not a `class ... extends RouterConfig` -- a dynamically
-  // imported file's own relative imports resolve relative to ITS location, so it has no way to
-  // reach back into the packaged app's bundled RouterConfig.js. Instead we import RouterConfig
-  // ourselves (statically, above) and layer whatever the external file exports on top of it.
   const overrides = (await import(pathToFileURL(process.env.CONFIG_FILE_PATH).href)).default;
   userConfig = Object.assign(new RouterConfig(), overrides).validate();
 } else {

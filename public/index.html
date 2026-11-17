@@ -63,7 +63,7 @@
     </div>
   </header>
 
-  <!-- Outlook-style command ribbon -->
+
   <div class="ribbon" role="toolbar" aria-label="Actions">
     <div class="ribbon-group">
       <div class="ribbon-row">
@@ -116,7 +116,7 @@
     </div>
   </div>
 
-  <!-- Search / filter bar -->
+
   <div class="searchbar" role="search">
     <div class="search-field search-grow">
       <span class="search-icon" aria-hidden="true">⌕</span>
@@ -140,7 +140,7 @@
         <option value="__none__">(no intent)</option>
       </select>
     </label>
-    <!-- only meaningful once "Check intents" has run; hidden otherwise -->
+
     <label class="search-date hidden" id="group-by-wrap">Group by
       <select id="group-by-select" class="mini-select search-select" aria-label="Group intents by">
         <option value="date-desc">Date received (newest)</option>
@@ -164,8 +164,7 @@
     <p class="workspace-hint" id="submit-hint">Run <strong>Fetch inbox</strong>, then <strong>Classify</strong> to classify recently pulled emails, and <strong>Check intents</strong> to just check for scheduled updates for all existing emails. Tick the rows you want and <strong>Submit &amp; Save</strong> to preview actions before anything is sent. Click a row to preview the thread.</p>
     
     
-    <!-- pager lives above the (horizontally-scrollable) table, in its own element, so paging is
-         always visible and never scrolls away with the table content -->
+
     <div class="pager-slot" id="pager-slot"></div>
     <!-- click a row to open the reading pane: list-pane shrinks, reading-pane slides in -->
     <div class="workspace-split" id="workspace-split">
